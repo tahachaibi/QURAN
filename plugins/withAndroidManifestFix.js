@@ -65,7 +65,10 @@ function applyVoiceLibraryPatch(config) {
 // AND withDangerousMod as a fallback fs.write (covers whichever runs last).
 function applyRootGradleExclusion(config) {
   const EXCLUSION_BLOCK =
-    '\nallprojects {\n' +
+    '\n// Added by ./plugins/withAndroidManifestFix.js — the println marker proves\n' +
+    '// in the Gradle log that this project was generated from the fixed source.\n' +
+    "println '>>> [quran-habit] FIX ACTIVE: com.android.support globally excluded <<<'\n" +
+    'allprojects {\n' +
     '    configurations.all {\n' +
     "        exclude group: 'com.android.support'\n" +
     '    }\n' +

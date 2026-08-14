@@ -10,3 +10,7 @@ web-build/
 *.orig.*
 .env
 .env.local
+
+# Generated native projects (managed workflow — EAS runs prebuild in the cloud)
+android/
+ios/
