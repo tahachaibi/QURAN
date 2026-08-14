@@ -1,4 +1,4 @@
-const { withAndroidManifest, withDangerousMod } = require('@expo/config-plugins');
+const { withAndroidManifest, withDangerousMod, withProjectBuildGradle } = require('@expo/config-plugins');
 const path = require('path');
 const fs = require('fs');
 
@@ -13,7 +13,6 @@ function applyManifestFix(config) {
     const application = manifest.application[0];
     if (!application.$) application.$ = {};
 
-    // Resolve android:appComponentFactory conflict between com.android.support and AndroidX
     application.$['tools:replace'] = 'android:appComponentFactory';
     application.$['android:appComponentFactory'] = 'androidx.core.app.CoreComponentFactory';
 
@@ -21,19 +20,15 @@ function applyManifestFix(config) {
   });
 }
 
-function applyGradlePatches(config) {
+// Patch the voice library's build.gradle, which declares:
+//   implementation "com.android.support:appcompat-v7:${supportVersion}"
+// (GString interpolation, NOT a plain literal — our old regex targeted
+//  'support-compat' and never matched, so the patch was always skipped)
+function applyVoiceLibraryPatch(config) {
   return withDangerousMod(config, [
     'android',
     (config) => {
       const projectRoot = config.modRequest.projectRoot;
-      const androidRoot = config.modRequest.platformProjectRoot;
-
-      // ── Patch 1: voice library ─────────────────────────────────────────────
-      // @react-native-voice/voice v3 declares com.android.support:support-compat:28
-      // in its own build.gradle.  androidx.core:core:1.13.1 ships the same
-      // android.support.v4.* shim classes, so the voice library's Java sources
-      // still compile after the swap — and support-compat-28 is removed from
-      // the APK classpath, eliminating the duplicate-class conflict.
       const voiceGradle = path.join(
         projectRoot,
         'node_modules',
@@ -43,36 +38,20 @@ function applyGradlePatches(config) {
         'build.gradle'
       );
 
-      if (fs.existsSync(voiceGradle)) {
-        let contents = fs.readFileSync(voiceGradle, 'utf-8');
-        if (contents.includes('com.android.support:support-compat')) {
-          contents = contents.replace(
-            /(['"])com\.android\.support:support-compat:[^'"]+\1/g,
-            "'androidx.core:core:1.13.1'"
-          );
-          fs.writeFileSync(voiceGradle, contents, 'utf-8');
-        }
-      }
+      if (!fs.existsSync(voiceGradle)) return config;
 
-      // ── Patch 2: root android/build.gradle safety net ─────────────────────
-      // Belt-and-suspenders: if any other transitive dep pulls in com.android.support
-      // artifacts, exclude them at the allprojects level too.
-      const rootGradle = path.join(androidRoot, 'build.gradle');
+      let contents = fs.readFileSync(voiceGradle, 'utf-8');
 
-      if (fs.existsSync(rootGradle)) {
-        let contents = fs.readFileSync(rootGradle, 'utf-8');
-        if (!contents.includes("exclude group: 'com.android.support'")) {
-          contents +=
-            '\nallprojects {\n' +
-            '    configurations.all {\n' +
-            "        exclude group: 'com.android.support', module: 'support-compat'\n" +
-            "        exclude group: 'com.android.support', module: 'versionedparcelable'\n" +
-            "        exclude group: 'com.android.support', module: 'animated-vector-drawable'\n" +
-            "        exclude group: 'com.android.support', module: 'support-vector-drawable'\n" +
-            '    }\n' +
-            '}\n';
-          fs.writeFileSync(rootGradle, contents, 'utf-8');
-        }
+      // Match both plain-quoted and GString forms of appcompat-v7
+      // e.g. "com.android.support:appcompat-v7:${supportVersion}"
+      //   or 'com.android.support:appcompat-v7:28.0.0'
+      let updated = contents.replace(
+        /["']com\.android\.support:appcompat-v7:[^"'\n]*["']/g,
+        '"androidx.appcompat:appcompat:1.7.0"'
+      );
+
+      if (updated !== contents) {
+        fs.writeFileSync(voiceGradle, updated, 'utf-8');
       }
 
       return config;
@@ -80,8 +59,50 @@ function applyGradlePatches(config) {
   ]);
 }
 
+// Belt-and-suspenders: exclude the entire com.android.support group from
+// the root android/build.gradle so no transitive dep can sneak it in.
+// We use BOTH withProjectBuildGradle (runs at the right time in the pipeline)
+// AND withDangerousMod as a fallback fs.write (covers whichever runs last).
+function applyRootGradleExclusion(config) {
+  const EXCLUSION_BLOCK =
+    '\nallprojects {\n' +
+    '    configurations.all {\n' +
+    "        exclude group: 'com.android.support'\n" +
+    '    }\n' +
+    '}\n';
+  const MARKER = "exclude group: 'com.android.support'";
+
+  // Primary path: proper mod API for android/build.gradle
+  config = withProjectBuildGradle(config, (config) => {
+    if (!config.modResults.contents.includes(MARKER)) {
+      config.modResults.contents += EXCLUSION_BLOCK;
+    }
+    return config;
+  });
+
+  // Fallback path: direct fs write (handles timing edge cases)
+  config = withDangerousMod(config, [
+    'android',
+    (config) => {
+      const rootGradle = path.join(config.modRequest.platformProjectRoot, 'build.gradle');
+
+      if (!fs.existsSync(rootGradle)) return config;
+
+      let contents = fs.readFileSync(rootGradle, 'utf-8');
+      if (!contents.includes(MARKER)) {
+        fs.writeFileSync(rootGradle, contents + EXCLUSION_BLOCK, 'utf-8');
+      }
+
+      return config;
+    },
+  ]);
+
+  return config;
+}
+
 module.exports = function withAndroidFixes(config) {
   config = applyManifestFix(config);
-  config = applyGradlePatches(config);
+  config = applyVoiceLibraryPatch(config);
+  config = applyRootGradleExclusion(config);
   return config;
 };
