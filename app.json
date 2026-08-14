@@ -27,6 +27,14 @@
     },
     "plugins": [
       "./plugins/withAndroidManifestFix",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableJetifier": true
+          }
+        }
+      ],
       "expo-router",
       [
         "expo-location",
