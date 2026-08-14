@@ -9,7 +9,7 @@
     "web": "expo start --web"
   },
   "dependencies": {
-    "@expo/vector-icons": "^14.0.4",
+    "@expo/vector-icons": "~14.0.4",
     "@react-native-async-storage/async-storage": "1.23.1",
     "@react-native-voice/voice": "^3.2.4",
     "expo": "~52.0.0",
@@ -29,6 +29,7 @@
   },
   "devDependencies": {
     "@babel/core": "^7.25.0",
+    "@expo/config-plugins": "~8.0.0",
     "@types/react": "~18.3.12",
     "typescript": "^5.3.3"
   }

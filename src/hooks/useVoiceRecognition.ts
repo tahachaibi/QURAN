@@ -26,7 +26,7 @@ export function useVoiceRecognition() {
     };
 
     return () => {
-      Voice.destroy().then(Voice.removeAllListeners).catch(() => {});
+      Voice.destroy().then(() => Voice.removeAllListeners()).catch(() => {});
     };
   }, []);
 

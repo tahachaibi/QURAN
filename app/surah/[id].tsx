@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -435,7 +435,7 @@ function MemorizeMode({
   onNext: () => void;
 }) {
   const ayah = surah.ayahs[currentIdx];
-  const words = ayah.text.split(' ');
+  const words = useMemo(() => ayah.text.split(' '), [ayah.text]);
 
   const [wordStates, setWordStates] = useState<WordState[]>(() => words.map(() => 'hidden'));
   const [currentWordIdx, setCurrentWordIdx] = useState(0);
@@ -453,6 +453,15 @@ function MemorizeMode({
   const { isListening, result, error: voiceError, startListening, clearResult } =
     useVoiceRecognition();
 
+  const markWord = useCallback((state: WordState) => {
+    setWordStates((prev) => {
+      const next = [...prev];
+      next[currentWordIdx] = state;
+      return next;
+    });
+    setCurrentWordIdx((i) => i + 1);
+  }, [currentWordIdx]);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -466,7 +475,7 @@ function MemorizeMode({
     expectedWordRef.current = words[currentWordIdx] ?? '';
     setVoiceFeedback(null);
     clearResult();
-  }, [currentWordIdx]);
+  }, [currentWordIdx, words, clearResult]);
 
   // Process voice recognition result
   useEffect(() => {
@@ -482,22 +491,13 @@ function MemorizeMode({
       }
     }, 900);
     return () => clearTimeout(t);
-  }, [result]);
+  }, [result, markWord]);
 
   const isFirst = currentIdx === 0;
   const isLast = currentIdx === surah.ayahs.length - 1;
   const isDone = currentWordIdx >= words.length;
   const knownCount = wordStates.filter((s) => s === 'known').length;
   const peekedCount = wordStates.filter((s) => s === 'peeked').length;
-
-  function markWord(state: WordState) {
-    setWordStates((prev) => {
-      const next = [...prev];
-      next[currentWordIdx] = state;
-      return next;
-    });
-    setCurrentWordIdx((i) => i + 1);
-  }
 
   function handleKnown() {
     markWord('known');

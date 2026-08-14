@@ -86,7 +86,7 @@ export default function PrayerTimesScreen() {
     if (view === 'month' && !monthlyData && !monthlyLoading) {
       loadMonthly();
     }
-  }, [view]);
+  }, [view, monthlyData, monthlyLoading, loadMonthly]);
 
   const todayDay = new Date().getDate();
   const nowMonth = new Date().getMonth();

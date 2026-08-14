@@ -31,7 +31,7 @@ function applyGradleExclusions(config) {
     // Jetifier (enabled via expo-build-properties) rewrites voice library bytecode
     // to reference AndroidX, so the old library is no longer needed at runtime.
     config.modResults.contents = contents.replace(
-      /^android \{/m,
+      /^android\s*\{/m,
       `configurations.all {
     exclude group: 'com.android.support', module: 'support-compat'
     exclude group: 'com.android.support', module: 'versionedparcelable'
