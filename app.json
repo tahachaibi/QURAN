@@ -22,6 +22,7 @@
       "bundler": "metro"
     },
     "plugins": [
+      "./plugins/withAndroidManifestFix",
       "expo-router",
       [
         "expo-location",
