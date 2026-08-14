@@ -7,12 +7,13 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "postinstall": "node scripts/patchVoiceLibrary.js"
+    "postinstall": "patch-package",
+    "eas-build-post-install": "node scripts/patchVoiceLibrary.js"
   },
   "dependencies": {
     "@expo/vector-icons": "~14.0.4",
     "@react-native-async-storage/async-storage": "1.23.1",
-    "@react-native-voice/voice": "^3.2.4",
+    "@react-native-voice/voice": "3.2.4",
     "expo": "~52.0.0",
     "expo-av": "~15.0.2",
     "expo-constants": "~17.0.0",
@@ -32,6 +33,7 @@
     "@babel/core": "^7.25.0",
     "@expo/config-plugins": "~8.0.0",
     "@types/react": "~18.3.12",
+    "patch-package": "^8.0.0",
     "typescript": "^5.3.3"
   }
 }
