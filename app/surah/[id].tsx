@@ -14,6 +14,8 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
 import { getSurah, getAudioUrl, DEFAULT_RECITER } from '../../src/services/quranApi';
+import { useVoiceRecognition } from '../../src/hooks/useVoiceRecognition';
+import { wordsMatch } from '../../src/utils/arabicText';
 import { Colors } from '../../src/constants/theme';
 import type { SurahDetail, Ayah } from '../../src/types';
 
@@ -419,7 +421,7 @@ function ReadMode({
   );
 }
 
-// ─── Memorize Mode (word-by-word) ─────────────────────────────────────────────
+// ─── Memorize Mode (word-by-word + voice) ────────────────────────────────────
 
 function MemorizeMode({
   surah,
@@ -438,8 +440,18 @@ function MemorizeMode({
   const [wordStates, setWordStates] = useState<WordState[]>(() => words.map(() => 'hidden'));
   const [currentWordIdx, setCurrentWordIdx] = useState(0);
   const [showError, setShowError] = useState(false);
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [voiceFeedback, setVoiceFeedback] = useState<{
+    recognized: string;
+    correct: boolean;
+  } | null>(null);
+
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const expectedWordRef = useRef(words[0] ?? '');
+
+  const { isListening, result, error: voiceError, startListening, clearResult } =
+    useVoiceRecognition();
 
   useEffect(() => {
     mountedRef.current = true;
@@ -449,31 +461,56 @@ function MemorizeMode({
     };
   }, []);
 
+  // Keep expected word ref in sync as user advances
+  useEffect(() => {
+    expectedWordRef.current = words[currentWordIdx] ?? '';
+    setVoiceFeedback(null);
+    clearResult();
+  }, [currentWordIdx]);
+
+  // Process voice recognition result
+  useEffect(() => {
+    if (result === null) return undefined;
+    const recognized = result.trim();
+    const correct = wordsMatch(expectedWordRef.current, recognized);
+    setVoiceFeedback({ recognized, correct });
+    if (!correct) return undefined;
+    const t = setTimeout(() => {
+      if (mountedRef.current) {
+        markWord('known');
+        setVoiceFeedback(null);
+      }
+    }, 900);
+    return () => clearTimeout(t);
+  }, [result]);
+
   const isFirst = currentIdx === 0;
   const isLast = currentIdx === surah.ayahs.length - 1;
   const isDone = currentWordIdx >= words.length;
   const knownCount = wordStates.filter((s) => s === 'known').length;
   const peekedCount = wordStates.filter((s) => s === 'peeked').length;
 
-  function handleKnown() {
+  function markWord(state: WordState) {
     setWordStates((prev) => {
       const next = [...prev];
-      next[currentWordIdx] = 'known';
+      next[currentWordIdx] = state;
       return next;
     });
     setCurrentWordIdx((i) => i + 1);
+  }
+
+  function handleKnown() {
+    markWord('known');
     setShowError(false);
+    setVoiceFeedback(null);
   }
 
   function handlePeek() {
-    setWordStates((prev) => {
-      const next = [...prev];
-      next[currentWordIdx] = 'peeked';
-      return next;
-    });
-    setCurrentWordIdx((i) => i + 1);
+    markWord('peeked');
     if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
     setShowError(true);
+    setVoiceFeedback(null);
+    clearResult();
     errorTimerRef.current = setTimeout(() => {
       if (mountedRef.current) setShowError(false);
     }, 2500);
@@ -484,6 +521,25 @@ function MemorizeMode({
     setWordStates(words.map(() => 'peeked'));
     setCurrentWordIdx(words.length);
     setShowError(false);
+    setVoiceFeedback(null);
+    clearResult();
+  }
+
+  function handleVoiceRetry() {
+    setVoiceFeedback(null);
+    clearResult();
+  }
+
+  function handleVoiceSkip() {
+    setVoiceFeedback(null);
+    clearResult();
+    handlePeek();
+  }
+
+  function switchMode(toVoice: boolean) {
+    setVoiceMode(toVoice);
+    setVoiceFeedback(null);
+    clearResult();
   }
 
   return (
@@ -492,11 +548,73 @@ function MemorizeMode({
         Ayah {currentIdx + 1} / {surah.numberOfAyahs}
       </Text>
 
-      {/* Error notification */}
-      {showError && (
+      {/* Manual / Voice toggle */}
+      <View style={styles.modeToggleRow}>
+        <TouchableOpacity
+          style={[styles.modeToggleBtn, !voiceMode && styles.modeToggleBtnActive]}
+          onPress={() => switchMode(false)}
+        >
+          <Ionicons name="hand-left-outline" size={14} color={!voiceMode ? '#fff' : Colors.textSecondary} />
+          <Text style={[styles.modeToggleText, !voiceMode && styles.modeToggleTextActive]}>
+            Manual
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.modeToggleBtn, voiceMode && styles.modeToggleBtnActive]}
+          onPress={() => switchMode(true)}
+        >
+          <Ionicons name="mic-outline" size={14} color={voiceMode ? '#fff' : Colors.textSecondary} />
+          <Text style={[styles.modeToggleText, voiceMode && styles.modeToggleTextActive]}>
+            Voice
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Manual error notice */}
+      {showError && !voiceMode && (
         <View style={styles.errorNotice}>
           <Ionicons name="close-circle" size={18} color="#fff" />
           <Text style={styles.errorNoticeText}>Keep practicing — you'll get it! 💪</Text>
+        </View>
+      )}
+
+      {/* Voice feedback card */}
+      {voiceFeedback && (
+        <View
+          style={[
+            styles.voiceFeedbackCard,
+            voiceFeedback.correct ? styles.voiceFeedbackOk : styles.voiceFeedbackBad,
+          ]}
+        >
+          {voiceFeedback.correct ? (
+            <View style={styles.voiceFeedbackRow}>
+              <Ionicons name="checkmark-circle" size={24} color={Colors.primary} />
+              <Text style={styles.voiceFeedbackCorrectText}>مَاشَاءَ اللَّه — Correct! 🎉</Text>
+            </View>
+          ) : (
+            <>
+              <Text style={styles.voiceYouSaid}>
+                You said:{' '}
+                <Text style={styles.voiceRecognized}>
+                  {voiceFeedback.recognized || '(nothing detected)'}
+                </Text>
+              </Text>
+              <Text style={styles.voiceExpected}>
+                Expected:{' '}
+                <Text style={styles.voiceExpectedWord}>{words[currentWordIdx]}</Text>
+              </Text>
+              <View style={styles.voiceFeedbackBtns}>
+                <TouchableOpacity style={styles.voiceRetryBtn} onPress={handleVoiceRetry}>
+                  <Ionicons name="mic" size={15} color={Colors.primary} />
+                  <Text style={styles.voiceRetryText}>Try again</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.voiceSkipBtn} onPress={handleVoiceSkip}>
+                  <Ionicons name="eye-outline" size={15} color={Colors.textSecondary} />
+                  <Text style={styles.voiceSkipText}>Show & skip</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
         </View>
       )}
 
@@ -536,27 +654,53 @@ function MemorizeMode({
       </View>
 
       {!isDone ? (
-        <>
-          <Text style={styles.memorizeHint}>
-            Word {currentWordIdx + 1} of {words.length} — did you remember it?
-          </Text>
-
-          <View style={styles.memorizeActions}>
-            <TouchableOpacity style={styles.knownBtn} onPress={handleKnown}>
-              <Ionicons name="checkmark-circle-outline" size={22} color="#fff" />
-              <Text style={styles.knownBtnText}>I knew it</Text>
+        voiceMode && !voiceFeedback ? (
+          /* Voice controls */
+          <>
+            <Text style={styles.memorizeHint}>
+              Word {currentWordIdx + 1} of {words.length} — recite it aloud
+            </Text>
+            <TouchableOpacity
+              style={[styles.micBtn, isListening && styles.micBtnActive]}
+              onPress={startListening}
+              disabled={isListening}
+              activeOpacity={0.8}
+            >
+              <Ionicons name={isListening ? 'radio' : 'mic'} size={36} color="#fff" />
+              <Text style={styles.micBtnText}>
+                {isListening ? 'Listening…' : 'Tap & recite'}
+              </Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.peekBtn} onPress={handlePeek}>
-              <Ionicons name="eye-outline" size={22} color={Colors.primary} />
-              <Text style={styles.peekBtnText}>Show me</Text>
+            {voiceError ? (
+              <Text style={styles.voiceErrorHint}>{voiceError} — tap to retry</Text>
+            ) : null}
+            <TouchableOpacity style={styles.revealAllBtn} onPress={handleRevealAll}>
+              <Text style={styles.revealAllText}>Reveal whole ayah</Text>
             </TouchableOpacity>
-          </View>
-
-          <TouchableOpacity style={styles.revealAllBtn} onPress={handleRevealAll}>
-            <Text style={styles.revealAllText}>Reveal whole ayah</Text>
-          </TouchableOpacity>
-        </>
+          </>
+        ) : !voiceMode ? (
+          /* Manual controls */
+          <>
+            <Text style={styles.memorizeHint}>
+              Word {currentWordIdx + 1} of {words.length} — did you remember it?
+            </Text>
+            <View style={styles.memorizeActions}>
+              <TouchableOpacity style={styles.knownBtn} onPress={handleKnown}>
+                <Ionicons name="checkmark-circle-outline" size={22} color="#fff" />
+                <Text style={styles.knownBtnText}>I knew it</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.peekBtn} onPress={handlePeek}>
+                <Ionicons name="eye-outline" size={22} color={Colors.primary} />
+                <Text style={styles.peekBtnText}>Show me</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity style={styles.revealAllBtn} onPress={handleRevealAll}>
+              <Text style={styles.revealAllText}>Reveal whole ayah</Text>
+            </TouchableOpacity>
+          </>
+        ) : null
       ) : (
+        /* Score card */
         <View style={styles.scoreCard}>
           <Text style={styles.scoreTitle}>Ayah Complete ✓</Text>
           <View style={styles.scoreRow}>
@@ -583,7 +727,6 @@ function MemorizeMode({
           <Ionicons name="chevron-back" size={20} color={isFirst ? Colors.border : Colors.primary} />
           <Text style={[styles.navBtnText, isFirst && styles.navBtnTextDisabled]}>Previous</Text>
         </TouchableOpacity>
-
         <TouchableOpacity
           style={[styles.navBtn, isLast && styles.btnDisabled]}
           onPress={onNext}
@@ -788,6 +931,96 @@ const styles = StyleSheet.create({
   },
   navBtnText: { fontSize: 15, fontWeight: '600', color: Colors.primary },
   navBtnTextDisabled: { color: Colors.border },
+
+  // Mode toggle (Manual / Voice)
+  modeToggleRow: {
+    flexDirection: 'row',
+    alignSelf: 'center',
+    backgroundColor: Colors.border,
+    borderRadius: 20,
+    padding: 3,
+    marginBottom: 16,
+    gap: 2,
+  },
+  modeToggleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    borderRadius: 18,
+  },
+  modeToggleBtnActive: { backgroundColor: Colors.primary },
+  modeToggleText: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
+  modeToggleTextActive: { color: '#fff' },
+
+  // Mic button
+  micBtn: {
+    alignSelf: 'center',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.primary,
+    width: 130,
+    height: 130,
+    borderRadius: 65,
+    justifyContent: 'center',
+    marginBottom: 16,
+    elevation: 6,
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+  },
+  micBtnActive: { backgroundColor: '#C0392B' },
+  micBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  voiceErrorHint: { fontSize: 12, color: Colors.error, textAlign: 'center', marginBottom: 12 },
+
+  // Voice feedback card
+  voiceFeedbackCard: {
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 14,
+    borderWidth: 1,
+  },
+  voiceFeedbackOk: {
+    backgroundColor: Colors.primary + '12',
+    borderColor: Colors.primary,
+  },
+  voiceFeedbackBad: {
+    backgroundColor: '#FFF5F5',
+    borderColor: '#FC8181',
+  },
+  voiceFeedbackRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  voiceFeedbackCorrectText: { fontSize: 16, fontWeight: '700', color: Colors.primary },
+  voiceYouSaid: { fontSize: 13, color: Colors.textSecondary, marginBottom: 4 },
+  voiceRecognized: { fontSize: 18, fontWeight: '700', color: '#C53030' },
+  voiceExpected: { fontSize: 13, color: Colors.textSecondary, marginBottom: 12 },
+  voiceExpectedWord: { fontSize: 20, fontWeight: '700', color: Colors.primary },
+  voiceFeedbackBtns: { flexDirection: 'row', gap: 10 },
+  voiceRetryBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+  },
+  voiceRetryText: { fontSize: 14, fontWeight: '700', color: Colors.primary },
+  voiceSkipBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  voiceSkipText: { fontSize: 14, fontWeight: '600', color: Colors.textSecondary },
 
   // Reciter modal
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
