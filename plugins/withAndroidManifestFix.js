@@ -1,4 +1,4 @@
-const { withAndroidManifest, withAppBuildGradle } = require('@expo/config-plugins');
+const { withAndroidManifest, withProjectBuildGradle } = require('@expo/config-plugins');
 
 function applyManifestFix(config) {
   return withAndroidManifest(config, (config) => {
@@ -19,29 +19,30 @@ function applyManifestFix(config) {
   });
 }
 
+// Appends an allprojects block to the ROOT android/build.gradle so the exclusion
+// applies to every Gradle module, including :react-native-voice_voice whose POM
+// still pulls in com.android.support:support-compat:28.0.0.
+// Jetifier (enabled via expo-build-properties) rewrites the voice library bytecode
+// to reference AndroidX, so the old support library is not needed at runtime.
 function applyGradleExclusions(config) {
-  return withAppBuildGradle(config, (config) => {
+  return withProjectBuildGradle(config, (config) => {
     const { contents } = config.modResults;
 
     if (contents.includes("exclude group: 'com.android.support'")) {
       return config;
     }
 
-    // Exclude the old support library from every dependency tree.
-    // Jetifier (enabled via expo-build-properties) rewrites voice library bytecode
-    // to reference AndroidX, so the old library is no longer needed at runtime.
-    config.modResults.contents = contents.replace(
-      /^android\s*\{/m,
-      `configurations.all {
-    exclude group: 'com.android.support', module: 'support-compat'
-    exclude group: 'com.android.support', module: 'versionedparcelable'
-    exclude group: 'com.android.support', module: 'animated-vector-drawable'
-    exclude group: 'com.android.support', module: 'support-vector-drawable'
+    config.modResults.contents = contents + `
+
+allprojects {
+    configurations.all {
+        exclude group: 'com.android.support', module: 'support-compat'
+        exclude group: 'com.android.support', module: 'versionedparcelable'
+        exclude group: 'com.android.support', module: 'animated-vector-drawable'
+        exclude group: 'com.android.support', module: 'support-vector-drawable'
+    }
 }
-
-android {`
-    );
-
+`;
     return config;
   });
 }
