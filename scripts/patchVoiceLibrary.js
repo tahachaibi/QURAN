@@ -41,3 +41,13 @@ if (patched === original) {
   fs.writeFileSync(voiceGradle, patched, 'utf-8');
   console.log('[patch-voice] replaced com.android.support:appcompat-v7 with androidx.appcompat:appcompat:1.7.0');
 }
+
+// Fail fast if the legacy support library is still referenced — better to stop
+// the build here with a clear message than fail 3 minutes into Gradle with
+// duplicate class errors.
+const finalContents = fs.readFileSync(voiceGradle, 'utf-8');
+if (finalContents.includes('com.android.support')) {
+  console.error('[patch-voice] ERROR: build.gradle still references com.android.support — patch did not apply!');
+  process.exit(1);
+}
+console.log('[patch-voice] verified: no com.android.support references remain');
