@@ -76,3 +76,21 @@ export interface AppSettings {
   reciter: string;
   location: { latitude: number; longitude: number } | null;
 }
+
+export interface MonthlyPrayerDay {
+  timings: PrayerTimings;
+  date: {
+    readable: string;
+    gregorian: {
+      day: string;
+      weekday: { en: string };
+      month: { number: number; en: string };
+      year: string;
+    };
+    hijri: {
+      day: string;
+      month: { en: string; ar: string };
+      year: string;
+    };
+  };
+}
