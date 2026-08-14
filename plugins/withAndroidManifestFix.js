@@ -12,8 +12,10 @@ module.exports = function withAndroidManifestFix(config) {
     const application = manifest.application[0];
     if (!application.$) application.$ = {};
 
-    // Fix conflict between com.android.support and androidx brought in by @react-native-voice/voice
+    // Fix conflict between com.android.support and androidx brought in by @react-native-voice/voice.
+    // tools:replace alone isn't enough — we must also provide the winning value explicitly.
     application.$['tools:replace'] = 'android:appComponentFactory';
+    application.$['android:appComponentFactory'] = 'androidx.core.app.CoreComponentFactory';
 
     return config;
   });
