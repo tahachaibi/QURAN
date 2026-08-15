@@ -76,9 +76,12 @@ export function useRecitationSession(expectedNorm: string[]) {
       restart();
     };
     Voice.onSpeechError = (e: any) => {
-      const code = String(e.error?.code ?? '');
-      // 7 = no match, 6 = speech timeout — normal pauses, keep listening.
-      if (code === '7' || code === '6') {
+      const code = String(e.error?.code ?? '').split('/')[0];
+      // Transient recognizer hiccups — normal during pauses in recitation.
+      // 5 = client, 6 = speech timeout, 7 = no match, 8 = recognizer busy,
+      // 11 = didn't understand. All recoverable: restart silently.
+      const transient = ['5', '6', '7', '8', '11'];
+      if (transient.includes(code)) {
         restart();
       } else if (activeRef.current) {
         setError(e.error?.message ?? 'Recognition failed');
