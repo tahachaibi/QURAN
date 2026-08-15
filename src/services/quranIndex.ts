@@ -50,6 +50,22 @@ export interface VerseMatch {
   wordOffset: number;
 }
 
+const BISMILLAH = ['بسم', 'الله', 'الرحمن', 'الرحيم'];
+
+/**
+ * If the heard words open with Bismillah, return them without it — the
+ * distinctive part of a recitation is what FOLLOWS the basmala, since nearly
+ * every surah opens with it. Returns null when there is no Bismillah prefix
+ * or nothing usable would remain.
+ */
+export function stripLeadingBismillah(heardNorm: string[]): string[] | null {
+  if (heardNorm.length < BISMILLAH.length + 3) return null;
+  for (let i = 0; i < BISMILLAH.length; i++) {
+    if (!wordsSimilar(BISMILLAH[i], heardNorm[i])) return null;
+  }
+  return heardNorm.slice(BISMILLAH.length);
+}
+
 // Space-padded ayah texts for the fast exact-substring pass.
 let paddedCache: string[] | null = null;
 let paddedCacheSource: IndexEntry[] | null = null;

@@ -13,7 +13,11 @@ import {
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { getSurah } from '../services/quranApi';
-import { loadQuranIndex, findVerseByPhrase } from '../services/quranIndex';
+import {
+  loadQuranIndex,
+  findVerseByPhrase,
+  stripLeadingBismillah,
+} from '../services/quranIndex';
 import { useRecitationSession } from '../hooks/useRecitationSession';
 import { tokenize } from '../utils/recitationMatcher';
 import { Colors } from '../constants/theme';
@@ -181,14 +185,23 @@ export default function ReciteView({
       try {
         const entries = await loadQuranIndex();
         const heard = tokenize(transcript);
-        const match = findVerseByPhrase(entries, heard, surahId);
+        // Nearly every surah opens with Bismillah — the words AFTER it are
+        // what identify the verse, so search the stripped form first.
+        const stripped = stripLeadingBismillah(heard);
+        const match =
+          (stripped && findVerseByPhrase(entries, stripped, surahId)) ||
+          findVerseByPhrase(entries, heard, surahId);
         if (!match) return;
         if (match.surah === surahId) {
           const block = ayahBlocksRef.current.find(
             (b) => b.numberInSurah === match.ayah
           );
           if (block) {
-            sessionRef.current?.seekTo(block.startWord + match.wordOffset);
+            const target = block.startWord + match.wordOffset;
+            const liveCursor = sessionRef.current?.cursor ?? 0;
+            // Already reciting right here — nothing to jump to.
+            if (Math.abs(target - liveCursor) <= 6) return;
+            sessionRef.current?.seekTo(target);
             setFoundNote(`Jumped to verse ${match.ayah}`);
             setTimeout(() => setFoundNote(null), 3000);
           }

@@ -70,16 +70,19 @@ export function useRecitationSession(
       setMissed(merged);
       if (next > sessionAnchorRef.current + 1) everMatchedRef.current = true;
 
-      // The session isn't getting going — the reciter is probably reciting a
-      // different verse. Fire the verse search EARLY, from partial results,
-      // instead of waiting seconds for Android to finalize the utterance.
-      // Refire only when 2+ more words arrived (a longer, more specific
-      // phrase for the next attempt).
-      if (!everMatchedRef.current && onNoMatchRef.current) {
+      // Verse-search trigger: many heard words produced no cursor progress
+      // in this utterance — the reciter is saying a different verse. Uses a
+      // SURPLUS rule (heard minus progressed) rather than "no progress at
+      // all": a recitation that opens with Bismillah matches the current
+      // surah's own Bismillah first, which must not disarm the search.
+      // Fires early from partials; refires only when 2+ more words arrived.
+      if (onNoMatchRef.current) {
         const wordCount = (values[0] ?? '').trim().split(/\s+/).length;
-        const threshold = isFinal ? 3 : 4;
+        const progress = Math.max(0, next - baseCursorRef.current);
+        const surplus = wordCount - progress;
+        const needed = everMatchedRef.current ? 5 : isFinal ? 3 : 4;
         if (
-          wordCount >= threshold &&
+          surplus >= needed &&
           wordCount >= noMatchFiredAtRef.current + 2
         ) {
           noMatchFiredAtRef.current = wordCount;
