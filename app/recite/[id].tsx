@@ -120,6 +120,46 @@ export default function ReciteScreen() {
     if (done && active) stop();
   }, [done, active, stop]);
 
+  // Build the review list: every miss/peek with its ayah + correct word.
+  // (Must live above the early returns — hooks can't be conditional.)
+  const mistakeEntries = useMemo(() => {
+    if (ayahBlocks.length === 0) return [];
+    const findBlock = (g: number) => {
+      for (let i = ayahBlocks.length - 1; i >= 0; i--) {
+        if (g >= ayahBlocks[i].startWord) return ayahBlocks[i];
+      }
+      return ayahBlocks[0];
+    };
+    const entries: {
+      index: number;
+      ayah: number;
+      correct: string;
+      heard: string | null;
+      type: 'missed' | 'peeked';
+    }[] = [];
+    for (const [g, heard] of missed) {
+      const b = findBlock(g);
+      entries.push({
+        index: g,
+        ayah: b.numberInSurah,
+        correct: b.words[g - b.startWord] ?? '',
+        heard,
+        type: 'missed',
+      });
+    }
+    for (const g of peeked) {
+      const b = findBlock(g);
+      entries.push({
+        index: g,
+        ayah: b.numberInSurah,
+        correct: b.words[g - b.startWord] ?? '',
+        heard: null,
+        type: 'peeked',
+      });
+    }
+    return entries.sort((a, b) => a.index - b.index);
+  }, [missed, peeked, ayahBlocks]);
+
   async function handleMicPress() {
     if (active) {
       await stop();
@@ -158,44 +198,6 @@ export default function ReciteScreen() {
 
   const mistakeCount = missed.size + peeked.size;
   const progress = totalWords > 0 ? cursor / totalWords : 0;
-
-  // Build the review list: every miss/peek with its ayah + correct word.
-  const mistakeEntries = useMemo(() => {
-    const findBlock = (g: number) => {
-      for (let i = ayahBlocks.length - 1; i >= 0; i--) {
-        if (g >= ayahBlocks[i].startWord) return ayahBlocks[i];
-      }
-      return ayahBlocks[0];
-    };
-    const entries: {
-      index: number;
-      ayah: number;
-      correct: string;
-      heard: string | null;
-      type: 'missed' | 'peeked';
-    }[] = [];
-    for (const [g, heard] of missed) {
-      const b = findBlock(g);
-      entries.push({
-        index: g,
-        ayah: b.numberInSurah,
-        correct: b.words[g - b.startWord] ?? '',
-        heard,
-        type: 'missed',
-      });
-    }
-    for (const g of peeked) {
-      const b = findBlock(g);
-      entries.push({
-        index: g,
-        ayah: b.numberInSurah,
-        correct: b.words[g - b.startWord] ?? '',
-        heard: null,
-        type: 'peeked',
-      });
-    }
-    return entries.sort((a, b) => a.index - b.index);
-  }, [missed, peeked, ayahBlocks]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
