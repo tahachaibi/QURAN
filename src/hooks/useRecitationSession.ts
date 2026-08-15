@@ -14,6 +14,8 @@ import { alignCandidates } from '../utils/recitationMatcher';
  */
 export function useRecitationSession(expectedNorm: string[]) {
   const [cursor, setCursor] = useState(0);
+  /** Live position — can sit behind `cursor` during a breath-restart replay. */
+  const [livePos, setLivePos] = useState(0);
   /** Missed expected-word index → best-effort normalized "what was heard". */
   const [missed, setMissed] = useState<Map<number, string | null>>(new Map());
   const [peeked, setPeeked] = useState<Set<number>>(new Set());
@@ -31,16 +33,17 @@ export function useRecitationSession(expectedNorm: string[]) {
   const applyCandidates = useCallback(
     (values: string[], isFinal: boolean) => {
       if (!activeRef.current || values.length === 0) return;
-      const { cursor: c, missed: m } = alignCandidates(
+      const { cursor: c, pos, missed: m } = alignCandidates(
         expectedRef.current,
         baseCursorRef.current,
         values
       );
       // A peek may have pushed the cursor past what this utterance derives —
-      // never move backwards.
+      // progress never moves backwards. The live position, however, may.
       const next = Math.max(c, cursorRef.current);
       cursorRef.current = next;
       setCursor(next);
+      setLivePos(pos);
       const merged = new Map(baseMissedRef.current);
       for (const mw of m) merged.set(mw.index, mw.heard);
       setMissed(merged);
@@ -141,6 +144,7 @@ export function useRecitationSession(expectedNorm: string[]) {
     cursorRef.current = 0;
     baseMissedRef.current = new Map();
     setCursor(0);
+    setLivePos(0);
     setMissed(new Map());
     setPeeked(new Set());
     setError(null);
@@ -154,6 +158,7 @@ export function useRecitationSession(expectedNorm: string[]) {
     cursorRef.current = c + 1;
     baseCursorRef.current = Math.max(baseCursorRef.current, c + 1);
     setCursor(c + 1);
+    setLivePos(c + 1);
   }, []);
 
   /** User says a flagged mistake was actually correct — remove it. */
@@ -176,6 +181,7 @@ export function useRecitationSession(expectedNorm: string[]) {
 
   return {
     cursor,
+    livePos,
     missed,
     peeked,
     active,

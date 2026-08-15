@@ -79,8 +79,17 @@ export interface MissedWord {
 }
 
 export interface AlignResult {
-  /** Index of the next expected word (all words before it are consumed). */
+  /**
+   * Furthest progress: index of the next expected word beyond everything
+   * recited so far. Never decreases — drives reveal/progress.
+   */
   cursor: number;
+  /**
+   * Live position: where the reciter currently IS. Can be BEHIND cursor when
+   * they catch their breath and restart from an earlier point in the verse —
+   * drives the current-word highlight.
+   */
+  pos: number;
   missed: MissedWord[];
 }
 
@@ -98,37 +107,45 @@ export function alignTranscript(
   lookAhead = 3
 ): AlignResult {
   const heard = tokenize(transcript);
-  let cursor = startCursor;
+  // `high` = furthest progress ever reached; `pos` = live matching position.
+  // They differ while the reciter replays an earlier passage after a breath.
+  let high = startCursor;
+  let pos = startCursor;
   const missed: MissedWord[] = [];
   // Heard words that matched nothing yet — candidates for "what the reciter
   // actually said" when we later discover skipped expected words.
   const unmatched: string[] = [];
 
+  // How far back a breath-restart may re-enter the text.
+  const BACK_WINDOW = 24;
+
   // Words that normalize to nothing (isolated symbols) can never be spoken —
-  // consume them automatically so they don't block the cursor.
+  // consume them automatically so they don't block the position.
   const skipEmpties = () => {
-    while (cursor < expectedNorm.length && expectedNorm[cursor] === '') cursor++;
+    while (pos < expectedNorm.length && expectedNorm[pos] === '') pos++;
   };
   skipEmpties();
 
   for (const h of heard) {
-    if (cursor >= expectedNorm.length) break;
-    const windowEnd = Math.min(cursor + lookAhead, expectedNorm.length);
+    if (pos >= expectedNorm.length && high >= expectedNorm.length) break;
+    const windowEnd = Math.min(pos + lookAhead, expectedNorm.length);
     let matched = false;
-    for (let j = cursor; j < windowEnd; j++) {
+    for (let j = pos; j < windowEnd; j++) {
       if (expectedNorm[j] === '') continue;
       if (wordsSimilar(expectedNorm[j], h)) {
         // Attribute buffered unmatched heard words to the skipped expected
         // words, in order — best-effort "you said X instead of Y".
+        // Skips inside already-recited territory (a replay) are NOT mistakes.
         let u = 0;
-        for (let k = cursor; k < j; k++) {
-          if (expectedNorm[k] !== '') {
+        for (let k = pos; k < j; k++) {
+          if (expectedNorm[k] !== '' && k >= high) {
             missed.push({ index: k, heard: unmatched[u++] ?? null });
           }
         }
         unmatched.length = 0;
-        cursor = j + 1;
+        pos = j + 1;
         skipEmpties();
+        high = Math.max(high, pos);
         matched = true;
         break;
       }
@@ -142,13 +159,34 @@ export function alignTranscript(
       );
       if (healIdx >= 0) {
         missed.splice(healIdx, 1);
-      } else {
-        unmatched.push(h);
+        continue;
       }
+      // Breath re-entry: the reciter may have restarted from an earlier
+      // point. Look backwards from the furthest position for this word and
+      // re-anchor the live position there. Short words are too ambiguous
+      // to anchor on. Wrong anchors self-correct: the next heard words
+      // re-align forward from wherever we land.
+      if (h.length >= 3) {
+        const backStart = Math.max(0, high - BACK_WINDOW);
+        let anchored = -1;
+        for (let j = high - 1; j >= backStart; j--) {
+          if (expectedNorm[j] !== '' && wordsSimilar(expectedNorm[j], h)) {
+            anchored = j;
+            break;
+          }
+        }
+        if (anchored >= 0) {
+          pos = anchored + 1;
+          skipEmpties();
+          unmatched.length = 0;
+          matched = true;
+        }
+      }
+      if (!matched) unmatched.push(h);
     }
   }
 
-  return { cursor, missed };
+  return { cursor: high, pos, missed };
 }
 
 /**
@@ -162,7 +200,7 @@ export function alignCandidates(
   candidates: string[],
   lookAhead = 3
 ): AlignResult {
-  let best: AlignResult = { cursor: startCursor, missed: [] };
+  let best: AlignResult = { cursor: startCursor, pos: startCursor, missed: [] };
   let first = true;
   for (const c of candidates) {
     if (!c) continue;

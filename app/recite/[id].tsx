@@ -88,6 +88,7 @@ export default function ReciteScreen() {
   const session = useRecitationSession(expectedNorm);
   const {
     cursor,
+    livePos,
     missed,
     peeked,
     active,
@@ -106,14 +107,15 @@ export default function ReciteScreen() {
     return () => clearInterval(t);
   }, [active]);
 
-  // Auto-scroll to the ayah containing the cursor
+  // Auto-scroll to the ayah containing the live position (follows the
+  // reciter even when they restart a passage after catching their breath)
   const listRef = useRef<FlatList<AyahWords>>(null);
   const currentAyahIdx = useMemo(() => {
     for (let i = ayahBlocks.length - 1; i >= 0; i--) {
-      if (cursor >= ayahBlocks[i].startWord) return i;
+      if (livePos >= ayahBlocks[i].startWord) return i;
     }
     return 0;
-  }, [cursor, ayahBlocks]);
+  }, [livePos, ayahBlocks]);
 
   useEffect(() => {
     if (!active || ayahBlocks.length === 0) return;
@@ -249,13 +251,14 @@ export default function ReciteScreen() {
         ref={listRef}
         data={ayahBlocks}
         keyExtractor={(b) => String(b.ayahIndex)}
-        extraData={{ cursor, missed, peeked, mode }}
+        extraData={{ cursor, livePos, missed, peeked, mode }}
         contentContainerStyle={styles.listContent}
         onScrollToIndexFailed={() => {}}
         renderItem={({ item }) => (
           <AyahLine
             block={item}
             cursor={cursor}
+            livePos={livePos}
             missed={missed}
             peeked={peeked}
             hidden={mode === 'memorize'}
@@ -421,12 +424,14 @@ export default function ReciteScreen() {
 const AyahLine = React.memo(function AyahLine({
   block,
   cursor,
+  livePos,
   missed,
   peeked,
   hidden,
 }: {
   block: AyahWords;
   cursor: number;
+  livePos: number;
   missed: Map<number, string | null>;
   peeked: Set<number>;
   hidden: boolean;
@@ -435,24 +440,28 @@ const AyahLine = React.memo(function AyahLine({
     <Text style={styles.ayahText}>
       {block.words.map((word, i) => {
         const g = block.startWord + i;
-        const isPast = g < cursor;
-        const isCurrent = g === cursor;
+        // Reveal is driven by furthest progress (cursor); the amber
+        // "you are here" highlight follows the live position, which moves
+        // back when the reciter restarts a passage after a breath.
+        const isRevealed = g < cursor;
+        const isCurrent = g === livePos;
         const isMissed = missed.has(g);
         const isPeeked = peeked.has(g);
 
         let style;
-        if (isPast) {
+        if (isCurrent) {
+          style = hidden && !isRevealed ? styles.wordHiddenCurrent : styles.wordCurrent;
+        } else if (isRevealed) {
           if (isMissed) style = styles.wordMissed;
           else if (isPeeked) style = styles.wordPeeked;
           else style = styles.wordDone;
-        } else if (isCurrent) {
-          style = hidden ? styles.wordHiddenCurrent : styles.wordCurrent;
         } else {
           style = hidden ? styles.wordHidden : styles.wordUpcoming;
         }
 
-        // In hidden mode, unrevealed words render as placeholder blocks
-        const display = hidden && !isPast ? '•'.repeat(3) : word;
+        // In hidden mode, unrevealed words render as placeholder blocks —
+        // words already reached stay revealed even during a breath replay.
+        const display = hidden && !isRevealed ? '•'.repeat(3) : word;
 
         return (
           <Text key={g} style={style}>
