@@ -86,8 +86,18 @@ export default function ReciteScreen() {
   }, [surah]);
 
   const session = useRecitationSession(expectedNorm);
-  const { cursor, missed, peeked, active, error, start, stop, reset, peekWord } =
-    session;
+  const {
+    cursor,
+    missed,
+    peeked,
+    active,
+    error,
+    start,
+    stop,
+    reset,
+    peekWord,
+    dismissMiss,
+  } = session;
 
   // Session timer
   useEffect(() => {
@@ -130,33 +140,30 @@ export default function ReciteScreen() {
       }
       return ayahBlocks[0];
     };
-    const entries: {
-      index: number;
-      ayah: number;
-      correct: string;
-      heard: string | null;
-      type: 'missed' | 'peeked';
-    }[] = [];
-    for (const [g, heard] of missed) {
+    const makeEntry = (
+      g: number,
+      heard: string | null,
+      type: 'missed' | 'peeked'
+    ) => {
       const b = findBlock(g);
-      entries.push({
+      const wi = g - b.startWord;
+      // Verse context: a few words on each side of the flagged word.
+      const from = Math.max(0, wi - 3);
+      const to = Math.min(b.words.length, wi + 4);
+      return {
         index: g,
         ayah: b.numberInSurah,
-        correct: b.words[g - b.startWord] ?? '',
+        correct: b.words[wi] ?? '',
+        context: b.words.slice(from, to),
+        highlight: wi - from,
         heard,
-        type: 'missed',
-      });
-    }
-    for (const g of peeked) {
-      const b = findBlock(g);
-      entries.push({
-        index: g,
-        ayah: b.numberInSurah,
-        correct: b.words[g - b.startWord] ?? '',
-        heard: null,
-        type: 'peeked',
-      });
-    }
+        type,
+      };
+    };
+    const entries = [
+      ...[...missed].map(([g, heard]) => makeEntry(g, heard, 'missed' as const)),
+      ...[...peeked].map((g) => makeEntry(g, null, 'peeked' as const)),
+    ];
     return entries.sort((a, b) => a.index - b.index);
   }, [missed, peeked, ayahBlocks]);
 
@@ -342,46 +349,61 @@ export default function ReciteScreen() {
             <ScrollView style={styles.mistakeList}>
               {mistakeEntries.map((m) => (
                 <View key={m.index} style={styles.mistakeRow}>
-                  <View style={styles.mistakeAyahBadge}>
-                    <Text style={styles.mistakeAyahText}>
-                      {toArabicNumber(m.ayah)}
+                  <View style={styles.mistakeTopRow}>
+                    <View style={styles.mistakeAyahBadge}>
+                      <Text style={styles.mistakeAyahText}>
+                        {toArabicNumber(m.ayah)}
+                      </Text>
+                    </View>
+                    {/* Verse context, flagged word in red inline */}
+                    <Text style={styles.mistakeContext}>
+                      {m.context.map((w, i) => (
+                        <Text
+                          key={i}
+                          style={
+                            i === m.highlight
+                              ? styles.mistakeContextBad
+                              : undefined
+                          }
+                        >
+                          {w}
+                          {i < m.context.length - 1 ? ' ' : ''}
+                        </Text>
+                      ))}
                     </Text>
                   </View>
-                  <View style={styles.mistakeBody}>
-                    <Text style={styles.mistakeCorrect}>{m.correct}</Text>
-                    {m.type === 'peeked' ? (
-                      <View style={styles.mistakeHeardRow}>
-                        <Ionicons
-                          name="eye-outline"
-                          size={13}
-                          color={Colors.accent}
-                        />
+                  <View style={styles.mistakeBottomRow}>
+                    <TouchableOpacity
+                      style={styles.dismissBtn}
+                      onPress={() => dismissMiss(m.index)}
+                    >
+                      <Ionicons
+                        name="checkmark"
+                        size={14}
+                        color={Colors.primary}
+                      />
+                      <Text style={styles.dismissBtnText}>I said it right</Text>
+                    </TouchableOpacity>
+                    <View style={styles.mistakeDetail}>
+                      {m.type === 'peeked' ? (
                         <Text style={styles.mistakePeekedLabel}>
-                          Revealed with Peek
+                          👁 Revealed with Peek
                         </Text>
-                      </View>
-                    ) : m.heard ? (
-                      <View style={styles.mistakeHeardRow}>
-                        <Ionicons
-                          name="mic-outline"
-                          size={13}
-                          color={Colors.error}
-                        />
-                        <Text style={styles.mistakeHeardLabel}>You said: </Text>
-                        <Text style={styles.mistakeHeardWord}>{m.heard}</Text>
-                      </View>
-                    ) : (
-                      <View style={styles.mistakeHeardRow}>
-                        <Ionicons
-                          name="mic-off-outline"
-                          size={13}
-                          color={Colors.error}
-                        />
+                      ) : m.heard ? (
+                        <Text style={styles.mistakeHeardLabel}>
+                          You said:{' '}
+                          <Text style={styles.mistakeHeardWord}>{m.heard}</Text>
+                        </Text>
+                      ) : (
                         <Text style={styles.mistakeHeardLabel}>
                           Skipped or not recognized
                         </Text>
-                      </View>
-                    )}
+                      )}
+                      <Text style={styles.mistakeCorrectLabel}>
+                        Correct:{' '}
+                        <Text style={styles.mistakeCorrect}>{m.correct}</Text>
+                      </Text>
+                    </View>
                   </View>
                 </View>
               ))}
@@ -593,12 +615,15 @@ const styles = StyleSheet.create({
   },
   mistakeList: { flexGrow: 0 },
   mistakeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 10,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
+    gap: 8,
+  },
+  mistakeTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   mistakeAyahBadge: {
     width: 34,
@@ -610,26 +635,49 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   mistakeAyahText: { fontSize: 14, color: Colors.accent, fontWeight: '700' },
-  mistakeBody: { flex: 1, alignItems: 'flex-end' },
-  mistakeCorrect: {
-    fontSize: 24,
-    color: Colors.primary,
-    backgroundColor: '#E7F0EA',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+  mistakeContext: {
+    flex: 1,
+    fontSize: 20,
+    lineHeight: 34,
+    color: Colors.textPrimary,
     writingDirection: 'rtl',
     textAlign: 'right',
   },
-  mistakeHeardRow: {
+  mistakeContextBad: {
+    color: Colors.error,
+    fontWeight: '700',
+    backgroundColor: '#FBE3E5',
+    borderRadius: 4,
+  },
+  mistakeBottomRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    marginTop: 4,
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  mistakeDetail: { flex: 1, alignItems: 'flex-end', gap: 2 },
+  mistakeCorrectLabel: { fontSize: 12, color: Colors.textSecondary },
+  mistakeCorrect: {
+    fontSize: 18,
+    color: Colors.primary,
+    fontWeight: '700',
+    backgroundColor: '#E7F0EA',
+    borderRadius: 4,
   },
   mistakeHeardLabel: { fontSize: 12, color: Colors.textSecondary },
   mistakeHeardWord: { fontSize: 15, color: Colors.error, fontWeight: '600' },
   mistakePeekedLabel: { fontSize: 12, color: Colors.accent },
+  dismissBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  dismissBtnText: { fontSize: 12, color: Colors.primary, fontWeight: '600' },
   mistakeEmpty: {
     textAlign: 'center',
     color: Colors.textSecondary,

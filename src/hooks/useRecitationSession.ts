@@ -156,5 +156,34 @@ export function useRecitationSession(expectedNorm: string[]) {
     setCursor(c + 1);
   }, []);
 
-  return { cursor, missed, peeked, active, error, start, stop, reset, peekWord };
+  /** User says a flagged mistake was actually correct — remove it. */
+  const dismissMiss = useCallback((index: number) => {
+    const base = new Map(baseMissedRef.current);
+    base.delete(index);
+    baseMissedRef.current = base;
+    setMissed((prev) => {
+      const m = new Map(prev);
+      m.delete(index);
+      return m;
+    });
+    setPeeked((prev) => {
+      if (!prev.has(index)) return prev;
+      const p = new Set(prev);
+      p.delete(index);
+      return p;
+    });
+  }, []);
+
+  return {
+    cursor,
+    missed,
+    peeked,
+    active,
+    error,
+    start,
+    stop,
+    reset,
+    peekWord,
+    dismissMiss,
+  };
 }
