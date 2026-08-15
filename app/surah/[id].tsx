@@ -205,6 +205,12 @@ export default function SurahScreen() {
             {surah.numberOfAyahs} verses · {surah.revelationType}
           </Text>
         </View>
+        <TouchableOpacity
+          onPress={() => router.push(`/recite/${id}`)}
+          style={styles.reciteBtn}
+        >
+          <Ionicons name="mic" size={18} color="#fff" />
+        </TouchableOpacity>
         <Text style={styles.headerArabic}>{surah.name}</Text>
       </View>
 
@@ -763,6 +769,15 @@ const styles = StyleSheet.create({
   headerName: { fontSize: 17, fontWeight: '700', color: Colors.textPrimary },
   headerMeta: { fontSize: 12, color: Colors.textSecondary },
   headerArabic: { fontSize: 22, color: Colors.textPrimary },
+  reciteBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
 
   // Mode tabs
   modeTabs: {

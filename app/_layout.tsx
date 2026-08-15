@@ -9,6 +9,7 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="surah/[id]" />
+        <Stack.Screen name="recite/[id]" />
       </Stack>
     </SafeAreaProvider>
   );
