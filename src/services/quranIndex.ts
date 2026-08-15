@@ -1,45 +1,18 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { tokenize, wordsSimilar } from '../utils/recitationMatcher';
+import { wordsSimilar } from '../utils/recitationMatcher';
+import bundledIndex from '../assets/quran-index.json';
 
 /**
  * Normalized full-Quran index for voice verse search ("take me to the verse
- * I'm reciting"). Downloaded once from alquran.cloud, normalized the same way
- * recognizer output is, and cached locally (~800KB).
+ * I'm reciting"). Bundled with the app (see scripts/generateQuranIndex.ts),
+ * so search needs no network and can never fail to load.
  */
-
-const STORAGE_KEY = 'quran-norm-index-v1';
 
 /** [surahNumber, ayahNumberInSurah, normalizedText] */
 export type IndexEntry = [number, number, string];
 
-let memoryCache: IndexEntry[] | null = null;
+const entries = bundledIndex as IndexEntry[];
 
 export async function loadQuranIndex(): Promise<IndexEntry[]> {
-  if (memoryCache) return memoryCache;
-
-  const stored = await AsyncStorage.getItem(STORAGE_KEY).catch(() => null);
-  if (stored) {
-    memoryCache = JSON.parse(stored) as IndexEntry[];
-    return memoryCache;
-  }
-
-  const res = await fetch('https://api.alquran.cloud/v1/quran/quran-uthmani');
-  if (!res.ok) throw new Error(`Failed to download Quran text: ${res.status}`);
-  const json = await res.json();
-
-  const entries: IndexEntry[] = [];
-  for (const surah of json.data.surahs) {
-    for (const ayah of surah.ayahs) {
-      entries.push([
-        surah.number,
-        ayah.numberInSurah,
-        tokenize(ayah.text).join(' '),
-      ]);
-    }
-  }
-
-  memoryCache = entries;
-  AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(entries)).catch(() => {});
   return entries;
 }
 
@@ -68,43 +41,39 @@ export function stripLeadingBismillah(heardNorm: string[]): string[] | null {
 
 // Space-padded ayah texts for the fast exact-substring pass.
 let paddedCache: string[] | null = null;
-let paddedCacheSource: IndexEntry[] | null = null;
-function getPadded(entries: IndexEntry[]): string[] {
-  if (!paddedCache || paddedCacheSource !== entries) {
-    paddedCache = entries.map((e) => ` ${e[2]} `);
-    paddedCacheSource = entries;
-  }
+function getPadded(): string[] {
+  if (!paddedCache) paddedCache = entries.map((e) => ` ${e[2]} `);
   return paddedCache;
 }
 
 /**
- * Find the verse containing a recited phrase. Word-level fuzzy matching (the
- * same tolerance as live follow-along) so recognizer output like تبارك still
- * matches the Uthmani-normalized تبرك. Tries the longest phrase first (more
- * specific), backing off to 3 words; also tries skipping the first heard
- * word, which is often recognizer noise. Matches in `preferSurah` win over
- * matches elsewhere.
+ * Find the verse containing a recited phrase. A fast exact-substring pass
+ * runs first (most recitations normalize identically); a word-level fuzzy
+ * pass (same tolerance as live follow-along) covers recognizer slips like
+ * تبارك vs the Uthmani-normalized تبرك. Tries the longest phrase first,
+ * backing off to 3 words; also tries skipping the first heard word, which
+ * is often recognizer noise. Matches in `preferSurah` win over matches
+ * elsewhere.
  */
 export function findVerseByPhrase(
-  entries: IndexEntry[],
+  allEntries: IndexEntry[],
   heardNorm: string[],
   preferSurah?: number
 ): VerseMatch | null {
-  const padded = getPadded(entries);
+  const padded = getPadded();
 
   for (let skip = 0; skip <= 1; skip++) {
     const words = heardNorm.slice(skip);
     for (let len = Math.min(6, words.length); len >= 3; len--) {
       const phrase = words.slice(0, len);
 
-      // Fast pass: exact substring after normalization (covers most cases,
-      // ~milliseconds). Only fall back to the fuzzy word scan if it fails.
+      // Fast pass: exact substring after normalization.
       const needle = ` ${phrase.join(' ')} `;
       let firstMatch: VerseMatch | null = null;
-      for (let e = 0; e < entries.length; e++) {
+      for (let e = 0; e < allEntries.length; e++) {
         const idx = padded[e].indexOf(needle);
         if (idx < 0) continue;
-        const [surah, ayah] = entries[e];
+        const [surah, ayah] = allEntries[e];
         const before = padded[e].slice(0, idx).trim();
         const match: VerseMatch = {
           surah,
@@ -117,7 +86,7 @@ export function findVerseByPhrase(
       if (firstMatch) return firstMatch;
 
       // Fuzzy pass: word-level tolerance for recognizer slips.
-      for (const [surah, ayah, norm] of entries) {
+      for (const [surah, ayah, norm] of allEntries) {
         const toks = norm.split(' ');
         for (let i = 0; i + len <= toks.length; i++) {
           let ok = true;
