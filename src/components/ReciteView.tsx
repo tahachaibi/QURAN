@@ -64,6 +64,8 @@ export interface ReciteViewProps {
   surahId: number;
   /** Anchor the session at this ayah once loaded (cross-surah verse search). */
   initialAyah?: number;
+  /** Word offset within the initial ayah to anchor at. */
+  initialWord?: number;
   /** Start listening automatically after anchoring. */
   autoStart?: boolean;
   /** Render the surah header with a back button (standalone screen). */
@@ -73,6 +75,7 @@ export interface ReciteViewProps {
 export default function ReciteView({
   surahId,
   initialAyah,
+  initialWord,
   autoStart,
   showHeader,
 }: ReciteViewProps) {
@@ -191,7 +194,9 @@ export default function ReciteView({
           }
         } else {
           await sessionRef.current?.stop();
-          router.replace(`/recite/${match.surah}?ayah=${match.ayah}&auto=1`);
+          router.replace(
+            `/recite/${match.surah}?ayah=${match.ayah}&w=${match.wordOffset}&auto=1`
+          );
         }
       } catch {
         // Index download failed (offline?) — stay put, keep listening.
@@ -232,9 +237,15 @@ export default function ReciteView({
     const block = ayahBlocks.find((b) => b.numberInSurah === initialAyah);
     if (!block) return;
     anchoredRef.current = true;
-    seekTo(block.startWord);
-    if (autoStart) start();
-  }, [initialAyah, autoStart, ayahBlocks, seekTo, start]);
+    const offset = Math.min(initialWord ?? 0, block.words.length - 1);
+    seekTo(block.startWord + Math.max(0, offset));
+    // Small delay lets the previous screen's recognizer teardown finish
+    // before this session claims the microphone.
+    if (autoStart) {
+      const t = setTimeout(() => start(), 400);
+      return () => clearTimeout(t);
+    }
+  }, [initialAyah, initialWord, autoStart, ayahBlocks, seekTo, start]);
 
   // Session timer
   useEffect(() => {

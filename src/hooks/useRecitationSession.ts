@@ -96,11 +96,43 @@ export function useRecitationSession(
     []
   );
 
+  // Voice's event handlers are GLOBAL singletons — when one screen replaces
+  // another (cross-surah verse search), the old screen's async cleanup can
+  // wipe the listeners the new screen just registered. Every (re)start
+  // re-asserts ownership of the listeners so the active session always wins.
+  const restartRef = useRef<() => void>(() => {});
+  const attachListeners = useCallback(() => {
+    Voice.onSpeechPartialResults = (e: any) => {
+      applyCandidates(e.value ?? [], false);
+    };
+    Voice.onSpeechResults = (e: any) => {
+      applyCandidates(e.value ?? [], true);
+      restartRef.current();
+    };
+    Voice.onSpeechEnd = () => {
+      restartRef.current();
+    };
+    Voice.onSpeechError = (e: any) => {
+      const code = String(e.error?.code ?? '').split('/')[0];
+      // Transient recognizer hiccups — normal during pauses in recitation.
+      // 5 = client, 6 = speech timeout, 7 = no match, 8 = recognizer busy,
+      // 11 = didn't understand. All recoverable: restart silently.
+      const transient = ['5', '6', '7', '8', '11'];
+      if (transient.includes(code)) {
+        restartRef.current();
+      } else if (activeRef.current) {
+        setError(e.error?.message ?? 'Recognition failed');
+        restartRef.current();
+      }
+    };
+  }, [applyCandidates]);
+
   const restart = useCallback(() => {
     if (!activeRef.current) return;
     if (restartTimer.current) clearTimeout(restartTimer.current);
     restartTimer.current = setTimeout(async () => {
       if (!activeRef.current) return;
+      attachListeners();
       try {
         await Voice.start('ar-SA', {
           EXTRA_PARTIAL_RESULTS: true,
@@ -110,6 +142,7 @@ export function useRecitationSession(
         // Recognizer busy — try once more shortly.
         restartTimer.current = setTimeout(() => {
           if (activeRef.current) {
+            attachListeners();
             Voice.start('ar-SA', {
               EXTRA_PARTIAL_RESULTS: true,
               EXTRA_MAX_RESULTS: 5,
@@ -118,39 +151,17 @@ export function useRecitationSession(
         }, 600);
       }
     }, 250);
-  }, []);
+  }, [attachListeners]);
+  restartRef.current = restart;
 
   useEffect(() => {
-    Voice.onSpeechPartialResults = (e: any) => {
-      applyCandidates(e.value ?? [], false);
-    };
-    Voice.onSpeechResults = (e: any) => {
-      applyCandidates(e.value ?? [], true);
-      restart();
-    };
-    Voice.onSpeechEnd = () => {
-      restart();
-    };
-    Voice.onSpeechError = (e: any) => {
-      const code = String(e.error?.code ?? '').split('/')[0];
-      // Transient recognizer hiccups — normal during pauses in recitation.
-      // 5 = client, 6 = speech timeout, 7 = no match, 8 = recognizer busy,
-      // 11 = didn't understand. All recoverable: restart silently.
-      const transient = ['5', '6', '7', '8', '11'];
-      if (transient.includes(code)) {
-        restart();
-      } else if (activeRef.current) {
-        setError(e.error?.message ?? 'Recognition failed');
-        restart();
-      }
-    };
-
+    attachListeners();
     return () => {
       activeRef.current = false;
       if (restartTimer.current) clearTimeout(restartTimer.current);
-      Voice.destroy().then(() => Voice.removeAllListeners()).catch(() => {});
+      Voice.destroy().catch(() => {});
     };
-  }, [applyCandidates, restart]);
+  }, [attachListeners]);
 
   const start = useCallback(async () => {
     setError(null);
@@ -159,17 +170,30 @@ export function useRecitationSession(
     sessionAnchorRef.current = cursorRef.current;
     everMatchedRef.current = false;
     noMatchFiredAtRef.current = 0;
+    attachListeners();
     try {
       await Voice.start('ar-SA', {
         EXTRA_PARTIAL_RESULTS: true,
         EXTRA_MAX_RESULTS: 5,
       });
     } catch {
-      activeRef.current = false;
-      setActive(false);
-      setError('Could not start microphone');
+      // A predecessor screen may still be tearing its recognizer down
+      // (cross-surah navigation) — retry once after it settles.
+      await new Promise((r) => setTimeout(r, 500));
+      if (!activeRef.current) return;
+      attachListeners();
+      try {
+        await Voice.start('ar-SA', {
+          EXTRA_PARTIAL_RESULTS: true,
+          EXTRA_MAX_RESULTS: 5,
+        });
+      } catch {
+        activeRef.current = false;
+        setActive(false);
+        setError('Could not start microphone');
+      }
     }
-  }, []);
+  }, [attachListeners]);
 
   const stop = useCallback(async () => {
     activeRef.current = false;

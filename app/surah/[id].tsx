@@ -204,7 +204,7 @@ export default function SurahScreen() {
         />
       )}
 
-      {mode === 'read' && <ReciteView surahId={Number(id)} />}
+      {mode === 'read' && <ReciteView key={id} surahId={Number(id)} />}
 
       {/* Reciter picker bottom sheet */}
       <Modal

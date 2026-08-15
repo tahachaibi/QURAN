@@ -5,9 +5,10 @@ import ReciteView from '../../src/components/ReciteView';
 import { Colors } from '../../src/constants/theme';
 
 export default function ReciteScreen() {
-  const { id, ayah, auto } = useLocalSearchParams<{
+  const { id, ayah, w, auto } = useLocalSearchParams<{
     id: string;
     ayah?: string;
+    w?: string;
     auto?: string;
   }>();
 
@@ -17,8 +18,10 @@ export default function ReciteScreen() {
       edges={['top']}
     >
       <ReciteView
+        key={id}
         surahId={Number(id)}
         initialAyah={ayah ? Number(ayah) : undefined}
+        initialWord={w ? Number(w) : undefined}
         autoStart={auto === '1'}
         showHeader
       />
