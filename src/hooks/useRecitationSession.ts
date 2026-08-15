@@ -47,6 +47,9 @@ export function useRecitationSession(
   // something else entirely" (no progress despite hearing full phrases).
   const sessionAnchorRef = useRef(0);
   const everMatchedRef = useRef(false);
+  // Word count of the last transcript onNoMatch fired for (avoids refiring
+  // on every partial while the search is inconclusive).
+  const noMatchFiredAtRef = useRef(0);
 
   const applyCandidates = useCallback(
     (values: string[], isFinal: boolean) => {
@@ -66,18 +69,28 @@ export function useRecitationSession(
       for (const mw of m) merged.set(mw.index, mw.heard);
       setMissed(merged);
       if (next > sessionAnchorRef.current + 1) everMatchedRef.current = true;
+
+      // The session isn't getting going — the reciter is probably reciting a
+      // different verse. Fire the verse search EARLY, from partial results,
+      // instead of waiting seconds for Android to finalize the utterance.
+      // Refire only when 2+ more words arrived (a longer, more specific
+      // phrase for the next attempt).
+      if (!everMatchedRef.current && onNoMatchRef.current) {
+        const wordCount = (values[0] ?? '').trim().split(/\s+/).length;
+        const threshold = isFinal ? 3 : 4;
+        if (
+          wordCount >= threshold &&
+          wordCount >= noMatchFiredAtRef.current + 2
+        ) {
+          noMatchFiredAtRef.current = wordCount;
+          onNoMatchRef.current(values[0]);
+        }
+      }
+
       if (isFinal) {
         baseCursorRef.current = next;
         baseMissedRef.current = merged;
-        // A full utterance came through but the session never got going —
-        // the reciter is probably reciting a different verse.
-        if (
-          !everMatchedRef.current &&
-          onNoMatchRef.current &&
-          (values[0] ?? '').trim().split(/\s+/).length >= 3
-        ) {
-          onNoMatchRef.current(values[0]);
-        }
+        noMatchFiredAtRef.current = 0;
       }
     },
     []
@@ -145,6 +158,7 @@ export function useRecitationSession(
     setActive(true);
     sessionAnchorRef.current = cursorRef.current;
     everMatchedRef.current = false;
+    noMatchFiredAtRef.current = 0;
     try {
       await Voice.start('ar-SA', {
         EXTRA_PARTIAL_RESULTS: true,

@@ -34,6 +34,18 @@ interface MushafPage {
   blocks: AyahWords[];
 }
 
+/** A boundary page that navigates to the previous/next surah when reached. */
+interface SentinelPage {
+  sentinel: 'prev' | 'next';
+  page: number;
+}
+
+type PageItem = MushafPage | SentinelPage;
+
+function isSentinel(p: PageItem): p is SentinelPage {
+  return 'sentinel' in p;
+}
+
 const ARABIC_DIGITS = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
 function toArabicNumber(n: number): string {
   return String(n)
@@ -121,6 +133,37 @@ export default function ReciteView({
     return result;
   }, [ayahBlocks]);
 
+  // Boundary sentinels: swiping past the first/last page moves to the
+  // neighboring surah, like paging through a physical mushaf.
+  const listData = useMemo(() => {
+    const arr: PageItem[] = [...pages];
+    if (pages.length > 0) {
+      if (surahId > 1) arr.unshift({ sentinel: 'prev', page: -1 });
+      if (surahId < 114) arr.push({ sentinel: 'next', page: -2 });
+    }
+    return arr;
+  }, [pages, surahId]);
+  const prevOffset = pages.length > 0 && surahId > 1 ? 1 : 0;
+
+  const navigatingRef = useRef(false);
+  const navigateToSurah = useCallback(
+    async (target: number) => {
+      if (navigatingRef.current || target < 1 || target > 114) return;
+      navigatingRef.current = true;
+      await sessionRef.current?.stop();
+      // Standalone screen hops recite→recite; embedded (surah Read tab)
+      // replaces the whole surah screen, which opens on the Read tab.
+      router.replace(showHeader ? `/recite/${target}` : `/surah/${target}`);
+    },
+    [showHeader]
+  );
+
+  // Warm up the verse-search index in the background so the first "find my
+  // verse" doesn't pay the download cost.
+  useEffect(() => {
+    loadQuranIndex().catch(() => {});
+  }, []);
+
   // Voice verse search: the reciter is saying something that doesn't match
   // here — find the verse anywhere in the Quran and jump to it.
   const searchBusyRef = useRef(false);
@@ -202,7 +245,7 @@ export default function ReciteView({
 
   // Auto page-turn: the mushaf page containing the live position (follows
   // the reciter even when they restart a passage after catching their breath)
-  const listRef = useRef<FlatList<MushafPage>>(null);
+  const listRef = useRef<FlatList<PageItem>>(null);
   const currentPageIdx = useMemo(() => {
     for (let i = pages.length - 1; i >= 0; i--) {
       const first = pages[i].blocks[0];
@@ -213,8 +256,11 @@ export default function ReciteView({
 
   useEffect(() => {
     if (pages.length === 0) return;
-    listRef.current?.scrollToIndex({ index: currentPageIdx, animated: true });
-  }, [currentPageIdx, pages.length]);
+    listRef.current?.scrollToIndex({
+      index: currentPageIdx + prevOffset,
+      animated: true,
+    });
+  }, [currentPageIdx, pages.length, prevOffset]);
 
   const done = totalWords > 0 && cursor >= totalWords;
 
@@ -337,33 +383,51 @@ export default function ReciteView({
         <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
       </View>
 
-      {/* Mushaf pages — horizontal, right-to-left like a physical Quran */}
+      {/* Mushaf pages — horizontal, right-to-left like a physical Quran.
+          Sentinel pages at both ends page into the neighboring surahs. */}
       <FlatList
         ref={listRef}
-        data={pages}
+        data={listData}
         horizontal
         inverted
         pagingEnabled
         showsHorizontalScrollIndicator={false}
-        keyExtractor={(p) => String(p.page)}
+        keyExtractor={(p) => (isSentinel(p) ? p.sentinel : String(p.page))}
         extraData={{ cursor, livePos, missed, peeked, mode }}
+        initialScrollIndex={prevOffset}
         getItemLayout={(_, index) => ({
           length: pageWidth,
           offset: pageWidth * index,
           index,
         })}
         onScrollToIndexFailed={() => {}}
-        renderItem={({ item }) => (
-          <MushafPageView
-            page={item}
-            width={pageWidth}
-            cursor={cursor}
-            livePos={livePos}
-            missed={missed}
-            peeked={peeked}
-            hidden={mode === 'memorize'}
-          />
-        )}
+        onMomentumScrollEnd={(e) => {
+          const idx = Math.round(e.nativeEvent.contentOffset.x / pageWidth);
+          const item = listData[idx];
+          if (item && isSentinel(item)) {
+            navigateToSurah(item.sentinel === 'prev' ? surahId - 1 : surahId + 1);
+          }
+        }}
+        renderItem={({ item }) =>
+          isSentinel(item) ? (
+            <View style={[styles.page, styles.sentinelPage, { width: pageWidth }]}>
+              <ActivityIndicator size="small" color={Colors.primary} />
+              <Text style={styles.sentinelText}>
+                {item.sentinel === 'prev' ? 'Previous surah…' : 'Next surah…'}
+              </Text>
+            </View>
+          ) : (
+            <MushafPageView
+              page={item}
+              width={pageWidth}
+              cursor={cursor}
+              livePos={livePos}
+              missed={missed}
+              peeked={peeked}
+              hidden={mode === 'memorize'}
+            />
+          )
+        }
       />
 
       {done ? (
@@ -687,6 +751,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     paddingVertical: 4,
   },
+  sentinelPage: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  sentinelText: { color: Colors.textSecondary, fontSize: 14 },
   ayahText: {
     fontSize: 24,
     lineHeight: 44,

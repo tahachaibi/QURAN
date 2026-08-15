@@ -50,6 +50,17 @@ export interface VerseMatch {
   wordOffset: number;
 }
 
+// Space-padded ayah texts for the fast exact-substring pass.
+let paddedCache: string[] | null = null;
+let paddedCacheSource: IndexEntry[] | null = null;
+function getPadded(entries: IndexEntry[]): string[] {
+  if (!paddedCache || paddedCacheSource !== entries) {
+    paddedCache = entries.map((e) => ` ${e[2]} `);
+    paddedCacheSource = entries;
+  }
+  return paddedCache;
+}
+
 /**
  * Find the verse containing a recited phrase. Word-level fuzzy matching (the
  * same tolerance as live follow-along) so recognizer output like تبارك still
@@ -63,11 +74,33 @@ export function findVerseByPhrase(
   heardNorm: string[],
   preferSurah?: number
 ): VerseMatch | null {
+  const padded = getPadded(entries);
+
   for (let skip = 0; skip <= 1; skip++) {
     const words = heardNorm.slice(skip);
     for (let len = Math.min(6, words.length); len >= 3; len--) {
       const phrase = words.slice(0, len);
+
+      // Fast pass: exact substring after normalization (covers most cases,
+      // ~milliseconds). Only fall back to the fuzzy word scan if it fails.
+      const needle = ` ${phrase.join(' ')} `;
       let firstMatch: VerseMatch | null = null;
+      for (let e = 0; e < entries.length; e++) {
+        const idx = padded[e].indexOf(needle);
+        if (idx < 0) continue;
+        const [surah, ayah] = entries[e];
+        const before = padded[e].slice(0, idx).trim();
+        const match: VerseMatch = {
+          surah,
+          ayah,
+          wordOffset: before ? before.split(' ').length : 0,
+        };
+        if (preferSurah !== undefined && surah === preferSurah) return match;
+        if (!firstMatch) firstMatch = match;
+      }
+      if (firstMatch) return firstMatch;
+
+      // Fuzzy pass: word-level tolerance for recognizer slips.
       for (const [surah, ayah, norm] of entries) {
         const toks = norm.split(' ');
         for (let i = 0; i + len <= toks.length; i++) {
