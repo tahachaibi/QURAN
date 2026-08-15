@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   Modal,
   ScrollView,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, router } from 'expo-router';
@@ -26,6 +27,12 @@ interface AyahWords {
   numberInSurah: number;
   words: string[]; // display words (with tashkeel)
   startWord: number; // global index of first word
+  page: number; // Madani mushaf page number
+}
+
+interface MushafPage {
+  page: number;
+  blocks: AyahWords[];
 }
 
 const ARABIC_DIGITS = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
@@ -56,6 +63,7 @@ export default function ReciteScreen() {
   const [mistakesOpen, setMistakesOpen] = useState(false);
   const [searching, setSearching] = useState(false);
   const [foundNote, setFoundNote] = useState<string | null>(null);
+  const { width: pageWidth } = useWindowDimensions();
 
   useEffect(() => {
     if (!id) return;
@@ -80,6 +88,7 @@ export default function ReciteScreen() {
           numberInSurah: ayah.numberInSurah,
           words: displayWords,
           startWord: globalIdx,
+          page: ayah.page,
         });
         for (const w of displayWords) {
           const t = tokenize(w);
@@ -91,6 +100,17 @@ export default function ReciteScreen() {
     }
     return { ayahBlocks: blocks, expectedNorm: norm, totalWords: norm.length };
   }, [surah]);
+
+  // Group ayahs into mushaf pages (real Madani page numbers from the API).
+  const pages = useMemo(() => {
+    const result: MushafPage[] = [];
+    for (const b of ayahBlocks) {
+      const last = result[result.length - 1];
+      if (last && last.page === b.page) last.blocks.push(b);
+      else result.push({ page: b.page, blocks: [b] });
+    }
+    return result;
+  }, [ayahBlocks]);
 
   // Voice verse search: the reciter is saying something that doesn't match
   // here — find the verse anywhere in the Quran and jump to it.
@@ -171,24 +191,21 @@ export default function ReciteScreen() {
     return () => clearInterval(t);
   }, [active]);
 
-  // Auto-scroll to the ayah containing the live position (follows the
-  // reciter even when they restart a passage after catching their breath)
-  const listRef = useRef<FlatList<AyahWords>>(null);
-  const currentAyahIdx = useMemo(() => {
-    for (let i = ayahBlocks.length - 1; i >= 0; i--) {
-      if (livePos >= ayahBlocks[i].startWord) return i;
+  // Auto page-turn: the mushaf page containing the live position (follows
+  // the reciter even when they restart a passage after catching their breath)
+  const listRef = useRef<FlatList<MushafPage>>(null);
+  const currentPageIdx = useMemo(() => {
+    for (let i = pages.length - 1; i >= 0; i--) {
+      const first = pages[i].blocks[0];
+      if (livePos >= first.startWord) return i;
     }
     return 0;
-  }, [livePos, ayahBlocks]);
+  }, [livePos, pages]);
 
   useEffect(() => {
-    if (!active || ayahBlocks.length === 0) return;
-    listRef.current?.scrollToIndex({
-      index: currentAyahIdx,
-      viewPosition: 0.35,
-      animated: true,
-    });
-  }, [currentAyahIdx, active, ayahBlocks.length]);
+    if (pages.length === 0) return;
+    listRef.current?.scrollToIndex({ index: currentPageIdx, animated: true });
+  }, [currentPageIdx, pages.length]);
 
   const done = totalWords > 0 && cursor >= totalWords;
 
@@ -310,17 +327,26 @@ export default function ReciteScreen() {
         <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
       </View>
 
-      {/* Text */}
+      {/* Mushaf pages — horizontal, right-to-left like a physical Quran */}
       <FlatList
         ref={listRef}
-        data={ayahBlocks}
-        keyExtractor={(b) => String(b.ayahIndex)}
+        data={pages}
+        horizontal
+        inverted
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        keyExtractor={(p) => String(p.page)}
         extraData={{ cursor, livePos, missed, peeked, mode }}
-        contentContainerStyle={styles.listContent}
+        getItemLayout={(_, index) => ({
+          length: pageWidth,
+          offset: pageWidth * index,
+          index,
+        })}
         onScrollToIndexFailed={() => {}}
         renderItem={({ item }) => (
-          <AyahLine
-            block={item}
+          <MushafPageView
+            page={item}
+            width={pageWidth}
             cursor={cursor}
             livePos={livePos}
             missed={missed}
@@ -328,19 +354,18 @@ export default function ReciteScreen() {
             hidden={mode === 'memorize'}
           />
         )}
-        ListFooterComponent={
-          done ? (
-            <View style={styles.doneBox}>
-              <Ionicons name="checkmark-circle" size={40} color={Colors.primary} />
-              <Text style={styles.doneTitle}>Surah completed!</Text>
-              <Text style={styles.doneMeta}>
-                {formatTime(seconds)} · {mistakeCount} mistake
-                {mistakeCount === 1 ? '' : 's'}
-              </Text>
-            </View>
-          ) : null
-        }
       />
+
+      {done ? (
+        <View style={styles.doneBox}>
+          <Ionicons name="checkmark-circle" size={28} color={Colors.primary} />
+          <Text style={styles.doneTitle}>Surah completed!</Text>
+          <Text style={styles.doneMeta}>
+            {formatTime(seconds)} · {mistakeCount} mistake
+            {mistakeCount === 1 ? '' : 's'}
+          </Text>
+        </View>
+      ) : null}
 
       {searching ? (
         <View style={styles.searchBanner}>
@@ -499,15 +524,17 @@ export default function ReciteScreen() {
   );
 }
 
-const AyahLine = React.memo(function AyahLine({
-  block,
+const MushafPageView = React.memo(function MushafPageView({
+  page,
+  width,
   cursor,
   livePos,
   missed,
   peeked,
   hidden,
 }: {
-  block: AyahWords;
+  page: MushafPage;
+  width: number;
   cursor: number;
   livePos: number;
   missed: Map<number, string | null>;
@@ -515,43 +542,59 @@ const AyahLine = React.memo(function AyahLine({
   hidden: boolean;
 }) {
   return (
-    <Text style={styles.ayahText}>
-      {block.words.map((word, i) => {
-        const g = block.startWord + i;
-        // Reveal is driven by furthest progress (cursor); the amber
-        // "you are here" highlight follows the live position, which moves
-        // back when the reciter restarts a passage after a breath.
-        const isRevealed = g < cursor;
-        const isCurrent = g === livePos;
-        const isMissed = missed.has(g);
-        const isPeeked = peeked.has(g);
+    <View style={[styles.page, { width }]}>
+      <ScrollView
+        contentContainerStyle={styles.pageContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* All ayahs of the page flow together, mushaf style */}
+        <Text style={styles.ayahText}>
+          {page.blocks.map((block) => (
+            <Text key={block.ayahIndex}>
+              {block.words.map((word, i) => {
+                const g = block.startWord + i;
+                // Reveal is driven by furthest progress (cursor); the amber
+                // "you are here" highlight follows the live position, which
+                // moves back when the reciter restarts after a breath.
+                const isRevealed = g < cursor;
+                const isCurrent = g === livePos;
+                const isMissed = missed.has(g);
+                const isPeeked = peeked.has(g);
 
-        let style;
-        if (isCurrent) {
-          style = hidden && !isRevealed ? styles.wordHiddenCurrent : styles.wordCurrent;
-        } else if (isRevealed) {
-          if (isMissed) style = styles.wordMissed;
-          else if (isPeeked) style = styles.wordPeeked;
-          else style = styles.wordDone;
-        } else {
-          style = hidden ? styles.wordHidden : styles.wordUpcoming;
-        }
+                let style;
+                if (isCurrent) {
+                  style =
+                    hidden && !isRevealed
+                      ? styles.wordHiddenCurrent
+                      : styles.wordCurrent;
+                } else if (isRevealed) {
+                  if (isMissed) style = styles.wordMissed;
+                  else if (isPeeked) style = styles.wordPeeked;
+                  else style = styles.wordDone;
+                } else {
+                  style = hidden ? styles.wordHidden : styles.wordUpcoming;
+                }
 
-        // In hidden mode, unrevealed words render as placeholder blocks —
-        // words already reached stay revealed even during a breath replay.
-        const display = hidden && !isRevealed ? '•'.repeat(3) : word;
+                // Hidden mode: unrevealed words are placeholder blocks —
+                // words already reached stay revealed during a breath replay.
+                const display = hidden && !isRevealed ? '•'.repeat(3) : word;
 
-        return (
-          <Text key={g} style={style}>
-            {display}
-            {i < block.words.length - 1 ? ' ' : ''}
-          </Text>
-        );
-      })}
-      <Text style={styles.ayahMarker}>
-        {' '}﴿{toArabicNumber(block.numberInSurah)}﴾{' '}
-      </Text>
-    </Text>
+                return (
+                  <Text key={g} style={style}>
+                    {display}
+                    {i < block.words.length - 1 ? ' ' : ''}
+                  </Text>
+                );
+              })}
+              <Text style={styles.ayahMarker}>
+                {' '}﴿{toArabicNumber(block.numberInSurah)}﴾{' '}
+              </Text>
+            </Text>
+          ))}
+        </Text>
+      </ScrollView>
+      <Text style={styles.pageNumber}>{toArabicNumber(page.page)}</Text>
+    </View>
   );
 });
 
@@ -617,13 +660,28 @@ const styles = StyleSheet.create({
     borderRadius: 2,
   },
 
-  listContent: { padding: 16, paddingBottom: 24 },
+  page: {
+    flex: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  pageContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  pageNumber: {
+    textAlign: 'center',
+    color: Colors.textSecondary,
+    fontSize: 13,
+    paddingVertical: 4,
+  },
   ayahText: {
-    fontSize: 26,
-    lineHeight: 46,
+    fontSize: 24,
+    lineHeight: 44,
     textAlign: 'right',
     writingDirection: 'rtl',
-    marginBottom: 10,
   },
   wordDone: { color: Colors.primaryLight },
   wordMissed: { color: Colors.error },
@@ -815,7 +873,7 @@ const styles = StyleSheet.create({
   },
   micBtnActive: { backgroundColor: Colors.error },
 
-  doneBox: { alignItems: 'center', paddingVertical: 24, gap: 6 },
+  doneBox: { alignItems: 'center', paddingVertical: 10, gap: 4 },
   doneTitle: { fontSize: 18, fontWeight: '700', color: Colors.primary },
   doneMeta: { fontSize: 13, color: Colors.textSecondary },
 });
