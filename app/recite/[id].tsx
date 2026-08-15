@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { getSurah } from '../../src/services/quranApi';
+import { loadQuranIndex, findVerseByPhrase } from '../../src/services/quranIndex';
 import { useRecitationSession } from '../../src/hooks/useRecitationSession';
 import { tokenize } from '../../src/utils/recitationMatcher';
 import { Colors } from '../../src/constants/theme';
@@ -42,13 +43,19 @@ function formatTime(totalSec: number): string {
 }
 
 export default function ReciteScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, ayah, auto } = useLocalSearchParams<{
+    id: string;
+    ayah?: string;
+    auto?: string;
+  }>();
   const [surah, setSurah] = useState<SurahDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [mode, setMode] = useState<FollowMode>('follow');
   const [seconds, setSeconds] = useState(0);
   const [mistakesOpen, setMistakesOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [foundNote, setFoundNote] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -85,7 +92,50 @@ export default function ReciteScreen() {
     return { ayahBlocks: blocks, expectedNorm: norm, totalWords: norm.length };
   }, [surah]);
 
-  const session = useRecitationSession(expectedNorm);
+  // Voice verse search: the reciter is saying something that doesn't match
+  // here — find the verse anywhere in the Quran and jump to it.
+  const searchBusyRef = useRef(false);
+  const ayahBlocksRef = useRef<AyahWords[]>([]);
+  ayahBlocksRef.current = ayahBlocks;
+
+  const handleNoMatch = useCallback(
+    async (transcript: string) => {
+      if (searchBusyRef.current) return;
+      searchBusyRef.current = true;
+      setSearching(true);
+      try {
+        const entries = await loadQuranIndex();
+        const heard = tokenize(transcript);
+        const match = findVerseByPhrase(entries, heard, Number(id));
+        if (!match) return;
+        if (match.surah === Number(id)) {
+          const block = ayahBlocksRef.current.find(
+            (b) => b.numberInSurah === match.ayah
+          );
+          if (block) {
+            sessionRef.current?.seekTo(block.startWord + match.wordOffset);
+            setFoundNote(`Jumped to verse ${match.ayah}`);
+            setTimeout(() => setFoundNote(null), 3000);
+          }
+        } else {
+          await sessionRef.current?.stop();
+          router.replace(`/recite/${match.surah}?ayah=${match.ayah}&auto=1`);
+        }
+      } catch {
+        // Index download failed (offline?) — stay put, keep listening.
+      } finally {
+        setSearching(false);
+        searchBusyRef.current = false;
+      }
+    },
+    [id]
+  );
+
+  const session = useRecitationSession(expectedNorm, {
+    onNoMatch: handleNoMatch,
+  });
+  const sessionRef = useRef<typeof session | null>(null);
+  sessionRef.current = session;
   const {
     cursor,
     livePos,
@@ -98,7 +148,21 @@ export default function ReciteScreen() {
     reset,
     peekWord,
     dismissMiss,
+    seekTo,
   } = session;
+
+  // Deep link: /recite/<surah>?ayah=N (used by cross-surah verse search).
+  // Anchor the session at that ayah once the surah loads; auto=1 also starts
+  // listening immediately so the recitation continues seamlessly.
+  const anchoredRef = useRef(false);
+  useEffect(() => {
+    if (anchoredRef.current || !ayah || ayahBlocks.length === 0) return;
+    const block = ayahBlocks.find((b) => b.numberInSurah === Number(ayah));
+    if (!block) return;
+    anchoredRef.current = true;
+    seekTo(block.startWord);
+    if (auto === '1') start();
+  }, [ayah, auto, ayahBlocks, seekTo, start]);
 
   // Session timer
   useEffect(() => {
@@ -277,6 +341,20 @@ export default function ReciteScreen() {
           ) : null
         }
       />
+
+      {searching ? (
+        <View style={styles.searchBanner}>
+          <ActivityIndicator size="small" color="#fff" />
+          <Text style={styles.searchBannerText}>Finding your verse…</Text>
+        </View>
+      ) : null}
+
+      {foundNote ? (
+        <View style={styles.foundBanner}>
+          <Ionicons name="locate" size={16} color="#fff" />
+          <Text style={styles.searchBannerText}>{foundNote}</Text>
+        </View>
+      ) : null}
 
       {error ? (
         <View style={styles.errorBanner}>
@@ -575,6 +653,27 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   errorBannerText: { color: '#fff', fontSize: 12, flex: 1 },
+  searchBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.primaryLight,
+    marginHorizontal: 12,
+    marginBottom: 6,
+    padding: 8,
+    borderRadius: 8,
+  },
+  foundBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.accent,
+    marginHorizontal: 12,
+    marginBottom: 6,
+    padding: 8,
+    borderRadius: 8,
+  },
+  searchBannerText: { color: '#fff', fontSize: 12, flex: 1, fontWeight: '600' },
 
   bottomBar: {
     flexDirection: 'row',

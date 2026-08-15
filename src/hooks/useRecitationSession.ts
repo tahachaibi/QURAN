@@ -12,7 +12,19 @@ import { alignCandidates } from '../utils/recitationMatcher';
  * Final results carry up to 5 alternatives — all are aligned and the best
  * outcome wins, which materially reduces false misses on Quranic Arabic.
  */
-export function useRecitationSession(expectedNorm: string[]) {
+export interface RecitationSessionOptions {
+  /**
+   * Called with the final transcript when the reciter has been speaking but
+   * nothing matched from the session anchor — e.g. they are reciting a
+   * different verse entirely. Lets the screen run a global verse search.
+   */
+  onNoMatch?: (transcript: string) => void;
+}
+
+export function useRecitationSession(
+  expectedNorm: string[],
+  options: RecitationSessionOptions = {}
+) {
   const [cursor, setCursor] = useState(0);
   /** Live position — can sit behind `cursor` during a breath-restart replay. */
   const [livePos, setLivePos] = useState(0);
@@ -24,11 +36,17 @@ export function useRecitationSession(expectedNorm: string[]) {
 
   const expectedRef = useRef(expectedNorm);
   expectedRef.current = expectedNorm;
+  const onNoMatchRef = useRef(options.onNoMatch);
+  onNoMatchRef.current = options.onNoMatch;
   const activeRef = useRef(false);
   const baseCursorRef = useRef(0);
   const cursorRef = useRef(0);
   const baseMissedRef = useRef<Map<number, string | null>>(new Map());
   const restartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The cursor value when listening began — used to detect "reciting
+  // something else entirely" (no progress despite hearing full phrases).
+  const sessionAnchorRef = useRef(0);
+  const everMatchedRef = useRef(false);
 
   const applyCandidates = useCallback(
     (values: string[], isFinal: boolean) => {
@@ -47,9 +65,19 @@ export function useRecitationSession(expectedNorm: string[]) {
       const merged = new Map(baseMissedRef.current);
       for (const mw of m) merged.set(mw.index, mw.heard);
       setMissed(merged);
+      if (next > sessionAnchorRef.current + 1) everMatchedRef.current = true;
       if (isFinal) {
         baseCursorRef.current = next;
         baseMissedRef.current = merged;
+        // A full utterance came through but the session never got going —
+        // the reciter is probably reciting a different verse.
+        if (
+          !everMatchedRef.current &&
+          onNoMatchRef.current &&
+          (values[0] ?? '').trim().split(/\s+/).length >= 3
+        ) {
+          onNoMatchRef.current(values[0]);
+        }
       }
     },
     []
@@ -115,6 +143,8 @@ export function useRecitationSession(expectedNorm: string[]) {
     setError(null);
     activeRef.current = true;
     setActive(true);
+    sessionAnchorRef.current = cursorRef.current;
+    everMatchedRef.current = false;
     try {
       await Voice.start('ar-SA', {
         EXTRA_PARTIAL_RESULTS: true,
@@ -161,6 +191,21 @@ export function useRecitationSession(expectedNorm: string[]) {
     setLivePos(c + 1);
   }, []);
 
+  /**
+   * Jump the session to an arbitrary word index (voice verse search landed
+   * somewhere else in the surah). Progress and highlight re-anchor there;
+   * listening continues uninterrupted.
+   */
+  const seekTo = useCallback((index: number) => {
+    const clamped = Math.max(0, Math.min(index, expectedRef.current.length));
+    baseCursorRef.current = clamped;
+    cursorRef.current = clamped;
+    sessionAnchorRef.current = clamped;
+    everMatchedRef.current = true;
+    setCursor(clamped);
+    setLivePos(clamped);
+  }, []);
+
   /** User says a flagged mistake was actually correct — remove it. */
   const dismissMiss = useCallback((index: number) => {
     const base = new Map(baseMissedRef.current);
@@ -191,5 +236,6 @@ export function useRecitationSession(expectedNorm: string[]) {
     reset,
     peekWord,
     dismissMiss,
+    seekTo,
   };
 }
