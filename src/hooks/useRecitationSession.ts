@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Voice from '@react-native-voice/voice';
-import { alignTranscript } from '../utils/recitationMatcher';
+import { alignCandidates } from '../utils/recitationMatcher';
 
 /**
  * Continuous recitation-follow session.
@@ -9,10 +9,13 @@ import { alignTranscript } from '../utils/recitationMatcher';
  * the session is active. Partial results re-transcribe the whole utterance as
  * it grows, so alignment always re-runs from the cursor position committed at
  * the start of the current utterance (`baseCursor`), keeping it idempotent.
+ * Final results carry up to 5 alternatives — all are aligned and the best
+ * outcome wins, which materially reduces false misses on Quranic Arabic.
  */
 export function useRecitationSession(expectedNorm: string[]) {
   const [cursor, setCursor] = useState(0);
-  const [missed, setMissed] = useState<Set<number>>(new Set());
+  /** Missed expected-word index → best-effort normalized "what was heard". */
+  const [missed, setMissed] = useState<Map<number, string | null>>(new Map());
   const [peeked, setPeeked] = useState<Set<number>>(new Set());
   const [active, setActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -22,27 +25,32 @@ export function useRecitationSession(expectedNorm: string[]) {
   const activeRef = useRef(false);
   const baseCursorRef = useRef(0);
   const cursorRef = useRef(0);
-  const baseMissedRef = useRef<number[]>([]);
+  const baseMissedRef = useRef<Map<number, string | null>>(new Map());
   const restartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const applyTranscript = useCallback((text: string, isFinal: boolean) => {
-    if (!activeRef.current || !text) return;
-    const { cursor: c, missed: m } = alignTranscript(
-      expectedRef.current,
-      baseCursorRef.current,
-      text
-    );
-    // A peek may have pushed the cursor past what this utterance derives —
-    // never move backwards.
-    const next = Math.max(c, cursorRef.current);
-    cursorRef.current = next;
-    setCursor(next);
-    setMissed(new Set([...baseMissedRef.current, ...m]));
-    if (isFinal) {
-      baseCursorRef.current = next;
-      baseMissedRef.current = [...baseMissedRef.current, ...m];
-    }
-  }, []);
+  const applyCandidates = useCallback(
+    (values: string[], isFinal: boolean) => {
+      if (!activeRef.current || values.length === 0) return;
+      const { cursor: c, missed: m } = alignCandidates(
+        expectedRef.current,
+        baseCursorRef.current,
+        values
+      );
+      // A peek may have pushed the cursor past what this utterance derives —
+      // never move backwards.
+      const next = Math.max(c, cursorRef.current);
+      cursorRef.current = next;
+      setCursor(next);
+      const merged = new Map(baseMissedRef.current);
+      for (const mw of m) merged.set(mw.index, mw.heard);
+      setMissed(merged);
+      if (isFinal) {
+        baseCursorRef.current = next;
+        baseMissedRef.current = merged;
+      }
+    },
+    []
+  );
 
   const restart = useCallback(() => {
     if (!activeRef.current) return;
@@ -50,14 +58,18 @@ export function useRecitationSession(expectedNorm: string[]) {
     restartTimer.current = setTimeout(async () => {
       if (!activeRef.current) return;
       try {
-        await Voice.start('ar-SA', { EXTRA_PARTIAL_RESULTS: true });
+        await Voice.start('ar-SA', {
+          EXTRA_PARTIAL_RESULTS: true,
+          EXTRA_MAX_RESULTS: 5,
+        });
       } catch {
         // Recognizer busy — try once more shortly.
         restartTimer.current = setTimeout(() => {
           if (activeRef.current) {
-            Voice.start('ar-SA', { EXTRA_PARTIAL_RESULTS: true }).catch(() =>
-              setError('Could not restart microphone')
-            );
+            Voice.start('ar-SA', {
+              EXTRA_PARTIAL_RESULTS: true,
+              EXTRA_MAX_RESULTS: 5,
+            }).catch(() => setError('Could not restart microphone'));
           }
         }, 600);
       }
@@ -66,10 +78,10 @@ export function useRecitationSession(expectedNorm: string[]) {
 
   useEffect(() => {
     Voice.onSpeechPartialResults = (e: any) => {
-      applyTranscript(e.value?.[0] ?? '', false);
+      applyCandidates(e.value ?? [], false);
     };
     Voice.onSpeechResults = (e: any) => {
-      applyTranscript(e.value?.[0] ?? '', true);
+      applyCandidates(e.value ?? [], true);
       restart();
     };
     Voice.onSpeechEnd = () => {
@@ -94,14 +106,17 @@ export function useRecitationSession(expectedNorm: string[]) {
       if (restartTimer.current) clearTimeout(restartTimer.current);
       Voice.destroy().then(() => Voice.removeAllListeners()).catch(() => {});
     };
-  }, [applyTranscript, restart]);
+  }, [applyCandidates, restart]);
 
   const start = useCallback(async () => {
     setError(null);
     activeRef.current = true;
     setActive(true);
     try {
-      await Voice.start('ar-SA', { EXTRA_PARTIAL_RESULTS: true });
+      await Voice.start('ar-SA', {
+        EXTRA_PARTIAL_RESULTS: true,
+        EXTRA_MAX_RESULTS: 5,
+      });
     } catch {
       activeRef.current = false;
       setActive(false);
@@ -124,9 +139,9 @@ export function useRecitationSession(expectedNorm: string[]) {
     await stop();
     baseCursorRef.current = 0;
     cursorRef.current = 0;
-    baseMissedRef.current = [];
+    baseMissedRef.current = new Map();
     setCursor(0);
-    setMissed(new Set());
+    setMissed(new Map());
     setPeeked(new Set());
     setError(null);
   }, [stop]);

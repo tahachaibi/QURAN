@@ -6,6 +6,8 @@ import {
   FlatList,
   ActivityIndicator,
   TouchableOpacity,
+  Modal,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, router } from 'expo-router';
@@ -46,6 +48,7 @@ export default function ReciteScreen() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [mode, setMode] = useState<FollowMode>('follow');
   const [seconds, setSeconds] = useState(0);
+  const [mistakesOpen, setMistakesOpen] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -156,6 +159,44 @@ export default function ReciteScreen() {
   const mistakeCount = missed.size + peeked.size;
   const progress = totalWords > 0 ? cursor / totalWords : 0;
 
+  // Build the review list: every miss/peek with its ayah + correct word.
+  const mistakeEntries = useMemo(() => {
+    const findBlock = (g: number) => {
+      for (let i = ayahBlocks.length - 1; i >= 0; i--) {
+        if (g >= ayahBlocks[i].startWord) return ayahBlocks[i];
+      }
+      return ayahBlocks[0];
+    };
+    const entries: {
+      index: number;
+      ayah: number;
+      correct: string;
+      heard: string | null;
+      type: 'missed' | 'peeked';
+    }[] = [];
+    for (const [g, heard] of missed) {
+      const b = findBlock(g);
+      entries.push({
+        index: g,
+        ayah: b.numberInSurah,
+        correct: b.words[g - b.startWord] ?? '',
+        heard,
+        type: 'missed',
+      });
+    }
+    for (const g of peeked) {
+      const b = findBlock(g);
+      entries.push({
+        index: g,
+        ayah: b.numberInSurah,
+        correct: b.words[g - b.startWord] ?? '',
+        heard: null,
+        type: 'peeked',
+      });
+    }
+    return entries.sort((a, b) => a.index - b.index);
+  }, [missed, peeked, ayahBlocks]);
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
@@ -234,17 +275,31 @@ export default function ReciteScreen() {
 
       {/* Bottom bar */}
       <View style={styles.bottomBar}>
-        <View style={styles.statsCol}>
+        <TouchableOpacity
+          style={styles.statsCol}
+          onPress={() => setMistakesOpen(true)}
+          disabled={mistakeCount === 0}
+        >
           <View style={styles.statRow}>
             <View
               style={[styles.recDot, active ? styles.recDotOn : styles.recDotOff]}
             />
             <Text style={styles.timerText}>{formatTime(seconds)}</Text>
           </View>
-          <Text style={styles.mistakesText}>
-            {mistakeCount} mistake{mistakeCount === 1 ? '' : 's'}
-          </Text>
-        </View>
+          <View style={styles.statRow}>
+            <Text
+              style={[
+                styles.mistakesText,
+                mistakeCount > 0 && styles.mistakesTextActive,
+              ]}
+            >
+              {mistakeCount} mistake{mistakeCount === 1 ? '' : 's'}
+            </Text>
+            {mistakeCount > 0 && (
+              <Ionicons name="chevron-up" size={12} color={Colors.error} />
+            )}
+          </View>
+        </TouchableOpacity>
 
         <TouchableOpacity onPress={handleReset} style={styles.resetBtn}>
           <Ionicons name="refresh" size={22} color={Colors.textSecondary} />
@@ -264,6 +319,77 @@ export default function ReciteScreen() {
           <Ionicons name={active ? 'stop' : 'mic'} size={30} color="#fff" />
         </TouchableOpacity>
       </View>
+
+      {/* Mistakes review */}
+      <Modal
+        visible={mistakesOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setMistakesOpen(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setMistakesOpen(false)}
+        >
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>
+              Mistakes ({mistakeEntries.length})
+            </Text>
+            <ScrollView style={styles.mistakeList}>
+              {mistakeEntries.map((m) => (
+                <View key={m.index} style={styles.mistakeRow}>
+                  <View style={styles.mistakeAyahBadge}>
+                    <Text style={styles.mistakeAyahText}>
+                      {toArabicNumber(m.ayah)}
+                    </Text>
+                  </View>
+                  <View style={styles.mistakeBody}>
+                    <Text style={styles.mistakeCorrect}>{m.correct}</Text>
+                    {m.type === 'peeked' ? (
+                      <View style={styles.mistakeHeardRow}>
+                        <Ionicons
+                          name="eye-outline"
+                          size={13}
+                          color={Colors.accent}
+                        />
+                        <Text style={styles.mistakePeekedLabel}>
+                          Revealed with Peek
+                        </Text>
+                      </View>
+                    ) : m.heard ? (
+                      <View style={styles.mistakeHeardRow}>
+                        <Ionicons
+                          name="mic-outline"
+                          size={13}
+                          color={Colors.error}
+                        />
+                        <Text style={styles.mistakeHeardLabel}>You said: </Text>
+                        <Text style={styles.mistakeHeardWord}>{m.heard}</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.mistakeHeardRow}>
+                        <Ionicons
+                          name="mic-off-outline"
+                          size={13}
+                          color={Colors.error}
+                        />
+                        <Text style={styles.mistakeHeardLabel}>
+                          Skipped or not recognized
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              ))}
+              {mistakeEntries.length === 0 && (
+                <Text style={styles.mistakeEmpty}>No mistakes — ما شاء الله!</Text>
+              )}
+            </ScrollView>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -277,7 +403,7 @@ const AyahLine = React.memo(function AyahLine({
 }: {
   block: AyahWords;
   cursor: number;
-  missed: Set<number>;
+  missed: Map<number, string | null>;
   peeked: Set<number>;
   hidden: boolean;
 }) {
@@ -434,6 +560,80 @@ const styles = StyleSheet.create({
   recDotOff: { backgroundColor: Colors.border },
   timerText: { fontSize: 15, fontWeight: '700', color: Colors.textPrimary },
   mistakesText: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  mistakesTextActive: { color: Colors.error, fontWeight: '600' },
+
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  modalSheet: {
+    backgroundColor: Colors.surface,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingBottom: 24,
+    maxHeight: '70%',
+  },
+  modalHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: Colors.border,
+    alignSelf: 'center',
+    marginVertical: 10,
+  },
+  modalTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    marginBottom: 12,
+  },
+  mistakeList: { flexGrow: 0 },
+  mistakeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  mistakeAyahBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1.5,
+    borderColor: Colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mistakeAyahText: { fontSize: 14, color: Colors.accent, fontWeight: '700' },
+  mistakeBody: { flex: 1, alignItems: 'flex-end' },
+  mistakeCorrect: {
+    fontSize: 24,
+    color: Colors.primary,
+    backgroundColor: '#E7F0EA',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    writingDirection: 'rtl',
+    textAlign: 'right',
+  },
+  mistakeHeardRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+  },
+  mistakeHeardLabel: { fontSize: 12, color: Colors.textSecondary },
+  mistakeHeardWord: { fontSize: 15, color: Colors.error, fontWeight: '600' },
+  mistakePeekedLabel: { fontSize: 12, color: Colors.accent },
+  mistakeEmpty: {
+    textAlign: 'center',
+    color: Colors.textSecondary,
+    paddingVertical: 20,
+    fontSize: 14,
+  },
   resetBtn: { padding: 8 },
   peekBtn: {
     flexDirection: 'row',

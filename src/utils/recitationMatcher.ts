@@ -71,11 +71,17 @@ export function wordsSimilar(expected: string, heard: string): boolean {
   return dist / maxLen <= 0.28;
 }
 
+export interface MissedWord {
+  /** Expected-word index that was skipped over (likely misread/missed). */
+  index: number;
+  /** Best-effort guess of what the reciter actually said (normalized), if any. */
+  heard: string | null;
+}
+
 export interface AlignResult {
   /** Index of the next expected word (all words before it are consumed). */
   cursor: number;
-  /** Expected-word indices that were skipped over (likely misread/missed). */
-  missed: number[];
+  missed: MissedWord[];
 }
 
 /**
@@ -93,7 +99,10 @@ export function alignTranscript(
 ): AlignResult {
   const heard = tokenize(transcript);
   let cursor = startCursor;
-  const missed: number[] = [];
+  const missed: MissedWord[] = [];
+  // Heard words that matched nothing yet — candidates for "what the reciter
+  // actually said" when we later discover skipped expected words.
+  const unmatched: string[] = [];
 
   // Words that normalize to nothing (isolated symbols) can never be spoken —
   // consume them automatically so they don't block the cursor.
@@ -105,19 +114,67 @@ export function alignTranscript(
   for (const h of heard) {
     if (cursor >= expectedNorm.length) break;
     const windowEnd = Math.min(cursor + lookAhead, expectedNorm.length);
+    let matched = false;
     for (let j = cursor; j < windowEnd; j++) {
       if (expectedNorm[j] === '') continue;
       if (wordsSimilar(expectedNorm[j], h)) {
+        // Attribute buffered unmatched heard words to the skipped expected
+        // words, in order — best-effort "you said X instead of Y".
+        let u = 0;
         for (let k = cursor; k < j; k++) {
-          if (expectedNorm[k] !== '') missed.push(k);
+          if (expectedNorm[k] !== '') {
+            missed.push({ index: k, heard: unmatched[u++] ?? null });
+          }
         }
+        unmatched.length = 0;
         cursor = j + 1;
         skipEmpties();
+        matched = true;
         break;
       }
     }
-    // No match in window: treat as recognizer noise/insertion and ignore.
+    if (!matched) {
+      // Self-healing: the recognizer sometimes emits a word LATE, after we
+      // already marked it missed. If this heard word matches a recent miss,
+      // retract that mistake.
+      const healIdx = missed.findIndex((m) =>
+        wordsSimilar(expectedNorm[m.index], h)
+      );
+      if (healIdx >= 0) {
+        missed.splice(healIdx, 1);
+      } else {
+        unmatched.push(h);
+      }
+    }
   }
 
   return { cursor, missed };
+}
+
+/**
+ * Align every recognizer alternative and keep the best outcome: furthest
+ * cursor, then fewest mistakes. The top alternative is often wrong for
+ * Quranic Arabic while a lower-ranked one is right.
+ */
+export function alignCandidates(
+  expectedNorm: string[],
+  startCursor: number,
+  candidates: string[],
+  lookAhead = 3
+): AlignResult {
+  let best: AlignResult = { cursor: startCursor, missed: [] };
+  let first = true;
+  for (const c of candidates) {
+    if (!c) continue;
+    const r = alignTranscript(expectedNorm, startCursor, c, lookAhead);
+    if (
+      first ||
+      r.cursor > best.cursor ||
+      (r.cursor === best.cursor && r.missed.length < best.missed.length)
+    ) {
+      best = r;
+      first = false;
+    }
+  }
+  return best;
 }
