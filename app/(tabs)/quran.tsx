@@ -11,7 +11,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { useSurahs } from '../../src/hooks/useQuran';
-import { Colors } from '../../src/constants/theme';
+import { Colors, Fonts } from '../../src/constants/theme';
 import type { Surah } from '../../src/types';
 
 export default function QuranScreen() {
@@ -129,5 +129,5 @@ const styles = StyleSheet.create({
   info: { flex: 1 },
   nameEn: { fontSize: 16, fontWeight: '600', color: Colors.textPrimary },
   meta: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
-  nameAr: { fontSize: 18, color: Colors.textPrimary, fontWeight: '500' },
+  nameAr: { fontSize: 21, color: Colors.primary, fontFamily: Fonts.arabicBold },
 });

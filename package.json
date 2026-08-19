@@ -11,6 +11,8 @@
     "eas-build-post-install": "node scripts/patchVoiceLibrary.js"
   },
   "dependencies": {
+    "@expo-google-fonts/amiri": "^0.4.1",
+    "@expo-google-fonts/amiri-quran": "^0.4.1",
     "@expo/vector-icons": "~14.0.4",
     "@react-native-async-storage/async-storage": "1.23.1",
     "@react-native-voice/voice": "3.2.4",
@@ -35,6 +37,7 @@
     "@types/react": "~18.3.12",
     "patch-package": "^8.0.0",
     "quran-json": "^3.1.2",
+    "quran-meta": "^6.0.17",
     "typescript": "^5.3.3"
   }
 }

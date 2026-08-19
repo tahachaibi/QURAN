@@ -9,6 +9,7 @@ import {
   Modal,
   ScrollView,
   useWindowDimensions,
+  Animated,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,8 +20,8 @@ import {
   stripLeadingBismillah,
 } from '../services/quranIndex';
 import { useRecitationSession } from '../hooks/useRecitationSession';
-import { tokenize } from '../utils/recitationMatcher';
-import { Colors } from '../constants/theme';
+import { tokenize, alignTranscript } from '../utils/recitationMatcher';
+import { Colors, Fonts } from '../constants/theme';
 import type { SurahDetail } from '../types';
 
 type FollowMode = 'follow' | 'memorize';
@@ -70,6 +71,12 @@ export interface ReciteViewProps {
   initialAyah?: number;
   /** Word offset within the initial ayah to anchor at. */
   initialWord?: number;
+  /**
+   * The transcript that triggered a cross-surah jump — pre-aligned on
+   * arrival so the words already recited count as progress instead of
+   * being marked as mistakes.
+   */
+  initialTranscript?: string;
   /** Start listening automatically after anchoring. */
   autoStart?: boolean;
   /** Render the surah header with a back button (standalone screen). */
@@ -80,6 +87,7 @@ export default function ReciteView({
   surahId,
   initialAyah,
   initialWord,
+  initialTranscript,
   autoStart,
   showHeader,
 }: ReciteViewProps) {
@@ -176,6 +184,8 @@ export default function ReciteView({
   const searchBusyRef = useRef(false);
   const ayahBlocksRef = useRef<AyahWords[]>([]);
   ayahBlocksRef.current = ayahBlocks;
+  const expectedNormRef = useRef<string[]>([]);
+  expectedNormRef.current = expectedNorm;
 
   const handleNoMatch = useCallback(
     async (transcript: string) => {
@@ -201,14 +211,21 @@ export default function ReciteView({
             const liveCursor = sessionRef.current?.cursor ?? 0;
             // Already reciting right here — nothing to jump to.
             if (Math.abs(target - liveCursor) <= 6) return;
-            sessionRef.current?.seekTo(target);
+            // Credit everything already recited: align the triggering
+            // transcript from the landing point and jump past it.
+            const credited = alignTranscript(
+              expectedNormRef.current,
+              target,
+              transcript
+            ).cursor;
+            sessionRef.current?.seekTo(Math.max(target, credited));
             setFoundNote(`Jumped to verse ${match.ayah}`);
             setTimeout(() => setFoundNote(null), 3000);
           }
         } else {
           await sessionRef.current?.stop();
           router.replace(
-            `/recite/${match.surah}?ayah=${match.ayah}&w=${match.wordOffset}&auto=1`
+            `/recite/${match.surah}?ayah=${match.ayah}&w=${match.wordOffset}&auto=1&t=${encodeURIComponent(transcript)}`
           );
         }
       } catch {
@@ -251,14 +268,34 @@ export default function ReciteView({
     if (!block) return;
     anchoredRef.current = true;
     const offset = Math.min(initialWord ?? 0, block.words.length - 1);
-    seekTo(block.startWord + Math.max(0, offset));
+    let anchor = block.startWord + Math.max(0, offset);
+    // Credit the words that triggered the jump — the reciter may already be
+    // mid-verse, and re-marking the beginning as "missed" would be wrong.
+    if (initialTranscript) {
+      const credited = alignTranscript(
+        expectedNorm,
+        anchor,
+        initialTranscript
+      ).cursor;
+      anchor = Math.max(anchor, credited);
+    }
+    seekTo(anchor);
     // Small delay lets the previous screen's recognizer teardown finish
     // before this session claims the microphone.
     if (autoStart) {
-      const t = setTimeout(() => start(), 400);
+      const t = setTimeout(() => start(), 200);
       return () => clearTimeout(t);
     }
-  }, [initialAyah, initialWord, autoStart, ayahBlocks, seekTo, start]);
+  }, [
+    initialAyah,
+    initialWord,
+    initialTranscript,
+    autoStart,
+    ayahBlocks,
+    expectedNorm,
+    seekTo,
+    start,
+  ]);
 
   // Session timer
   useEffect(() => {
@@ -392,11 +429,17 @@ export default function ReciteView({
             key={m}
             style={[styles.modeTab, mode === m && styles.modeTabActive]}
             onPress={() => setMode(m)}
+            activeOpacity={0.8}
           >
+            <Ionicons
+              name={m === 'follow' ? 'eye-outline' : 'eye-off-outline'}
+              size={15}
+              color={mode === m ? '#fff' : Colors.textSecondary}
+            />
             <Text
               style={[styles.modeTabText, mode === m && styles.modeTabTextActive]}
             >
-              {m === 'follow' ? '👁 Follow' : '🧠 Hidden'}
+              {m === 'follow' ? 'Follow' : 'Hidden'}
             </Text>
           </TouchableOpacity>
         ))}
@@ -525,12 +568,7 @@ export default function ReciteView({
           </TouchableOpacity>
         )}
 
-        <TouchableOpacity
-          onPress={handleMicPress}
-          style={[styles.micBtn, active && styles.micBtnActive]}
-        >
-          <Ionicons name={active ? 'stop' : 'mic'} size={30} color="#fff" />
-        </TouchableOpacity>
+        <MicButton active={active} onPress={handleMicPress} />
       </View>
 
       {/* Mistakes review */}
@@ -622,6 +660,55 @@ export default function ReciteView({
   );
 }
 
+function MicButton({ active, onPress }: { active: boolean; onPress: () => void }) {
+  const pulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!active) {
+      pulse.setValue(0);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.timing(pulse, {
+        toValue: 1,
+        duration: 1600,
+        useNativeDriver: true,
+      })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [active, pulse]);
+
+  const ringScale = pulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.55],
+  });
+  const ringOpacity = pulse.interpolate({
+    inputRange: [0, 0.7, 1],
+    outputRange: [0.45, 0.12, 0],
+  });
+
+  return (
+    <View style={styles.micWrap}>
+      {active && (
+        <Animated.View
+          style={[
+            styles.micRing,
+            { transform: [{ scale: ringScale }], opacity: ringOpacity },
+          ]}
+        />
+      )}
+      <TouchableOpacity
+        onPress={onPress}
+        style={[styles.micBtn, active && styles.micBtnActive]}
+        activeOpacity={0.85}
+      >
+        <Ionicons name={active ? 'stop' : 'mic'} size={28} color="#fff" />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 const MushafPageView = React.memo(function MushafPageView({
   page,
   width,
@@ -641,12 +728,14 @@ const MushafPageView = React.memo(function MushafPageView({
 }) {
   return (
     <View style={[styles.page, { width }]}>
-      <ScrollView
-        contentContainerStyle={styles.pageContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* All ayahs of the page flow together, mushaf style */}
-        <Text style={styles.ayahText}>
+      <View style={styles.paperCard}>
+        <View style={styles.paperRule} />
+        <ScrollView
+          contentContainerStyle={styles.pageContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* All ayahs of the page flow together, mushaf style */}
+          <Text style={styles.ayahText}>
           {page.blocks.map((block) => (
             <Text key={block.ayahIndex}>
               {block.words.map((word, i) => {
@@ -689,9 +778,14 @@ const MushafPageView = React.memo(function MushafPageView({
               </Text>
             </Text>
           ))}
-        </Text>
-      </ScrollView>
-      <Text style={styles.pageNumber}>{toArabicNumber(page.page)}</Text>
+          </Text>
+        </ScrollView>
+        <View style={styles.pageFooter}>
+          <View style={styles.pageNumberBadge}>
+            <Text style={styles.pageNumber}>{toArabicNumber(page.page)}</Text>
+          </View>
+        </View>
+      </View>
     </View>
   );
 });
@@ -709,7 +803,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary,
     paddingHorizontal: 24,
     paddingVertical: 10,
-    borderRadius: 8,
+    borderRadius: 10,
   },
   backBtnText: { color: '#fff', fontWeight: '600' },
 
@@ -722,97 +816,126 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
   },
-  headerBack: { marginRight: 12 },
+  headerBack: { marginRight: 12, padding: 2 },
   headerInfo: { flex: 1 },
   headerName: { fontSize: 17, fontWeight: '700', color: Colors.textPrimary },
   headerMeta: { fontSize: 12, color: Colors.textSecondary, marginTop: 1 },
-  headerArabic: { fontSize: 20, color: Colors.primary, fontWeight: '600' },
+  headerArabic: {
+    fontSize: 24,
+    color: Colors.primary,
+    fontFamily: Fonts.arabicBold,
+  },
 
   modeTabs: {
     flexDirection: 'row',
-    margin: 12,
-    backgroundColor: '#ECEAE4',
-    borderRadius: 10,
+    marginHorizontal: 14,
+    marginTop: 12,
+    marginBottom: 8,
+    backgroundColor: '#EBE5D6',
+    borderRadius: 12,
     padding: 3,
   },
   modeTab: {
     flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
+    flexDirection: 'row',
+    gap: 6,
+    paddingVertical: 9,
+    borderRadius: 10,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  modeTabActive: { backgroundColor: Colors.surface, elevation: 1 },
-  modeTabText: { fontSize: 13, color: Colors.textSecondary, fontWeight: '600' },
-  modeTabTextActive: { color: Colors.primary },
+  modeTabActive: { backgroundColor: Colors.primary, elevation: 2 },
+  modeTabText: { fontSize: 13.5, color: Colors.textSecondary, fontWeight: '600' },
+  modeTabTextActive: { color: '#fff' },
 
   progressTrack: {
-    height: 4,
-    backgroundColor: Colors.border,
-    marginHorizontal: 12,
-    borderRadius: 2,
+    height: 5,
+    backgroundColor: '#E4DECE',
+    marginHorizontal: 14,
+    marginBottom: 4,
+    borderRadius: 3,
     overflow: 'hidden',
   },
   progressFill: {
     height: '100%',
     backgroundColor: Colors.accent,
-    borderRadius: 2,
+    borderRadius: 3,
   },
 
-  page: {
+  page: { flex: 1, paddingHorizontal: 10, paddingVertical: 8 },
+  paperCard: {
     flex: 1,
-    paddingHorizontal: 6,
-    paddingVertical: 4,
+    backgroundColor: Colors.paper,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.paperEdge,
+    overflow: 'hidden',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  paperRule: {
+    height: 3,
+    backgroundColor: Colors.accent,
+    opacity: 0.55,
+    marginHorizontal: 40,
+    marginTop: 10,
+    borderRadius: 2,
   },
   pageContent: {
     flexGrow: 1,
     justifyContent: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+  },
+  pageFooter: { alignItems: 'center', paddingBottom: 8 },
+  pageNumberBadge: {
+    borderWidth: 1,
+    borderColor: Colors.paperEdge,
+    borderRadius: 12,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 2,
+    backgroundColor: Colors.surface,
   },
-  pageNumber: {
-    textAlign: 'center',
-    color: Colors.textSecondary,
-    fontSize: 13,
-    paddingVertical: 4,
-  },
-  sentinelPage: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-  },
+  pageNumber: { color: Colors.textSecondary, fontSize: 12.5 },
+  sentinelPage: { alignItems: 'center', justifyContent: 'center', gap: 10 },
   sentinelText: { color: Colors.textSecondary, fontSize: 14 },
+
   ayahText: {
+    fontFamily: Fonts.quran,
     fontSize: 24,
-    lineHeight: 44,
+    lineHeight: 54,
     textAlign: 'right',
     writingDirection: 'rtl',
   },
   wordDone: { color: Colors.primaryLight },
   wordMissed: { color: Colors.error },
-  wordPeeked: { color: Colors.accent },
+  wordPeeked: { color: '#B8860B' },
   wordCurrent: {
-    color: Colors.textPrimary,
-    backgroundColor: '#F4E7C3',
-    borderRadius: 4,
+    color: Colors.primary,
+    backgroundColor: Colors.accentSoft,
+    borderRadius: 6,
   },
-  wordUpcoming: { color: '#B9B4A9' },
-  wordHidden: { color: 'transparent', backgroundColor: '#E8E4DC', borderRadius: 4 },
+  wordUpcoming: { color: '#BDB5A3' },
+  wordHidden: { color: 'transparent', backgroundColor: '#EAE3D2', borderRadius: 6 },
   wordHiddenCurrent: {
     color: 'transparent',
-    backgroundColor: '#F4E7C3',
-    borderRadius: 4,
+    backgroundColor: Colors.accentSoft,
+    borderRadius: 6,
   },
-  ayahMarker: { color: Colors.accent, fontSize: 22 },
+  ayahMarker: { color: Colors.accent, fontFamily: Fonts.arabic, fontSize: 21 },
 
   errorBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     backgroundColor: Colors.error,
-    marginHorizontal: 12,
+    marginHorizontal: 14,
     marginBottom: 6,
-    padding: 8,
-    borderRadius: 8,
+    padding: 9,
+    borderRadius: 12,
   },
   errorBannerText: { color: '#fff', fontSize: 12, flex: 1 },
   searchBanner: {
@@ -820,59 +943,126 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     backgroundColor: Colors.primaryLight,
-    marginHorizontal: 12,
+    marginHorizontal: 14,
     marginBottom: 6,
-    padding: 8,
-    borderRadius: 8,
+    padding: 9,
+    borderRadius: 12,
   },
   foundBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     backgroundColor: Colors.accent,
-    marginHorizontal: 12,
+    marginHorizontal: 14,
     marginBottom: 6,
-    padding: 8,
-    borderRadius: 8,
+    padding: 9,
+    borderRadius: 12,
   },
-  searchBannerText: { color: '#fff', fontSize: 12, flex: 1, fontWeight: '600' },
+  searchBannerText: { color: '#fff', fontSize: 12.5, flex: 1, fontWeight: '600' },
 
   bottomBar: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginHorizontal: 12,
+    marginBottom: 10,
+    marginTop: 2,
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 10,
     backgroundColor: Colors.surface,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
+    borderRadius: 20,
     gap: 12,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
   },
   statsCol: { flex: 1 },
   statRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   recDot: { width: 8, height: 8, borderRadius: 4 },
   recDotOn: { backgroundColor: Colors.error },
   recDotOff: { backgroundColor: Colors.border },
-  timerText: { fontSize: 15, fontWeight: '700', color: Colors.textPrimary },
+  timerText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    fontVariant: ['tabular-nums'],
+  },
   mistakesText: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
-  mistakesTextActive: { color: Colors.error, fontWeight: '600' },
+  mistakesTextActive: { color: Colors.error, fontWeight: '700' },
+
+  resetBtn: {
+    padding: 9,
+    borderRadius: 12,
+    backgroundColor: Colors.background,
+  },
+  peekBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+    borderRadius: 14,
+    backgroundColor: Colors.successSoft,
+  },
+  peekText: { color: Colors.primary, fontSize: 13, fontWeight: '700' },
+
+  micWrap: { width: 62, height: 62, alignItems: 'center', justifyContent: 'center' },
+  micRing: {
+    position: 'absolute',
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    backgroundColor: Colors.error,
+  },
+  micBtn: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 5,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  micBtnActive: { backgroundColor: Colors.error },
+
+  doneBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginHorizontal: 14,
+    marginBottom: 6,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: Colors.successSoft,
+    borderWidth: 1,
+    borderColor: Colors.primaryLight,
+  },
+  doneTitle: { fontSize: 15.5, fontWeight: '700', color: Colors.primary },
+  doneMeta: { fontSize: 12.5, color: Colors.textSecondary },
 
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
+    backgroundColor: 'rgba(24,22,16,0.45)',
     justifyContent: 'flex-end',
   },
   modalSheet: {
     backgroundColor: Colors.surface,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: 20,
-    paddingBottom: 24,
-    maxHeight: '70%',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 18,
+    paddingBottom: 26,
+    maxHeight: '72%',
   },
   modalHandle: {
-    width: 40,
-    height: 4,
-    borderRadius: 2,
+    width: 42,
+    height: 5,
+    borderRadius: 3,
     backgroundColor: Colors.border,
     alignSelf: 'center',
     marginVertical: 10,
@@ -885,16 +1075,15 @@ const styles = StyleSheet.create({
   },
   mistakeList: { flexGrow: 0 },
   mistakeRow: {
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+    backgroundColor: Colors.paper,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.paperEdge,
+    padding: 12,
+    marginBottom: 10,
     gap: 8,
   },
-  mistakeTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
+  mistakeTopRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   mistakeAyahBadge: {
     width: 34,
     height: 34,
@@ -903,20 +1092,21 @@ const styles = StyleSheet.create({
     borderColor: Colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: Colors.surface,
   },
   mistakeAyahText: { fontSize: 14, color: Colors.accent, fontWeight: '700' },
   mistakeContext: {
     flex: 1,
-    fontSize: 20,
-    lineHeight: 34,
+    fontFamily: Fonts.quran,
+    fontSize: 18,
+    lineHeight: 40,
     color: Colors.textPrimary,
     writingDirection: 'rtl',
     textAlign: 'right',
   },
   mistakeContextBad: {
     color: Colors.error,
-    fontWeight: '700',
-    backgroundColor: '#FBE3E5',
+    backgroundColor: Colors.errorSoft,
     borderRadius: 4,
   },
   mistakeBottomRow: {
@@ -928,56 +1118,29 @@ const styles = StyleSheet.create({
   mistakeDetail: { flex: 1, alignItems: 'flex-end', gap: 2 },
   mistakeCorrectLabel: { fontSize: 12, color: Colors.textSecondary },
   mistakeCorrect: {
-    fontSize: 18,
+    fontSize: 17,
     color: Colors.primary,
     fontWeight: '700',
-    backgroundColor: '#E7F0EA',
+    backgroundColor: Colors.successSoft,
     borderRadius: 4,
   },
   mistakeHeardLabel: { fontSize: 12, color: Colors.textSecondary },
-  mistakeHeardWord: { fontSize: 15, color: Colors.error, fontWeight: '600' },
-  mistakePeekedLabel: { fontSize: 12, color: Colors.accent },
+  mistakeHeardWord: { fontSize: 15, color: Colors.error, fontWeight: '700' },
+  mistakePeekedLabel: { fontSize: 12, color: '#B8860B' },
   dismissBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: Colors.primary,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 12,
+    backgroundColor: Colors.successSoft,
   },
-  dismissBtnText: { fontSize: 12, color: Colors.primary, fontWeight: '600' },
+  dismissBtnText: { fontSize: 12, color: Colors.primary, fontWeight: '700' },
   mistakeEmpty: {
     textAlign: 'center',
     color: Colors.textSecondary,
     paddingVertical: 20,
     fontSize: 14,
   },
-  resetBtn: { padding: 8 },
-  peekBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: Colors.primary,
-  },
-  peekText: { color: Colors.primary, fontSize: 13, fontWeight: '600' },
-  micBtn: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 3,
-  },
-  micBtnActive: { backgroundColor: Colors.error },
-
-  doneBox: { alignItems: 'center', paddingVertical: 10, gap: 4 },
-  doneTitle: { fontSize: 18, fontWeight: '700', color: Colors.primary },
-  doneMeta: { fontSize: 13, color: Colors.textSecondary },
 });

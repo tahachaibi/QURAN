@@ -15,7 +15,7 @@ import { Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
 import { getSurah, getAudioUrl, DEFAULT_RECITER } from '../../src/services/quranApi';
 import ReciteView from '../../src/components/ReciteView';
-import { Colors } from '../../src/constants/theme';
+import { Colors, Fonts } from '../../src/constants/theme';
 import type { SurahDetail, Ayah } from '../../src/types';
 
 type Mode = 'listen' | 'read';
@@ -350,7 +350,7 @@ const styles = StyleSheet.create({
   headerInfo: { flex: 1 },
   headerName: { fontSize: 17, fontWeight: '700', color: Colors.textPrimary },
   headerMeta: { fontSize: 12, color: Colors.textSecondary },
-  headerArabic: { fontSize: 22, color: Colors.textPrimary },
+  headerArabic: { fontSize: 24, color: Colors.primary, fontFamily: Fonts.arabicBold },
   reciteBtn: {
     width: 36,
     height: 36,
