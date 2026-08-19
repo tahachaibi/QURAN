@@ -70,6 +70,7 @@ export function findVerseByPhrase(
       // Fast pass: exact substring after normalization.
       const needle = ` ${phrase.join(' ')} `;
       let firstMatch: VerseMatch | null = null;
+      let matchCount = 0;
       for (let e = 0; e < allEntries.length; e++) {
         const idx = padded[e].indexOf(needle);
         if (idx < 0) continue;
@@ -82,8 +83,12 @@ export function findVerseByPhrase(
         };
         if (preferSurah !== undefined && surah === preferSurah) return match;
         if (!firstMatch) firstMatch = match;
+        matchCount++;
+        if (matchCount >= 2 && len <= 3) break;
       }
-      if (firstMatch) return firstMatch;
+      // A 3-word phrase found in several places is too ambiguous to jump on
+      // — hold until more words arrive. With 4+ words, take the first match.
+      if (firstMatch) return len >= 4 || matchCount === 1 ? firstMatch : null;
 
       // Fuzzy pass: word-level tolerance for recognizer slips.
       for (const [surah, ayah, norm] of allEntries) {
@@ -100,10 +105,12 @@ export function findVerseByPhrase(
           const match: VerseMatch = { surah, ayah, wordOffset: i };
           if (preferSurah !== undefined && surah === preferSurah) return match;
           if (!firstMatch) firstMatch = match;
+          matchCount++;
           break;
         }
+        if (matchCount >= 2 && len <= 3) break;
       }
-      if (firstMatch) return firstMatch;
+      if (firstMatch) return len >= 4 || matchCount === 1 ? firstMatch : null;
     }
   }
   return null;

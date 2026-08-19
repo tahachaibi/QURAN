@@ -1,6 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Voice from '@react-native-voice/voice';
-import { alignCandidates } from '../utils/recitationMatcher';
+import {
+  alignCandidates,
+  tokenize,
+  wordsSimilar,
+} from '../utils/recitationMatcher';
+
+// ── Cross-screen microphone handoff ─────────────────────────────────────────
+// A cross-surah verse jump replaces the screen. Destroying and restarting the
+// recognizer across that transition loses ~1-2s of speech — the reciter's
+// words in that window vanish and the new session can't catch up. Instead the
+// outgoing screen marks a handoff: its cleanup leaves the engine running, and
+// the incoming screen adopts the live utterance mid-stream.
+let pendingHandoff = false;
+let handoffSafety: ReturnType<typeof setTimeout> | null = null;
+
+export function prepareVoiceHandoff() {
+  pendingHandoff = true;
+  if (handoffSafety) clearTimeout(handoffSafety);
+  // If no screen adopts within 5s (navigation failed), stop the engine so
+  // the microphone doesn't stay hot forever.
+  handoffSafety = setTimeout(() => {
+    if (pendingHandoff) {
+      pendingHandoff = false;
+      Voice.destroy().catch(() => {});
+    }
+  }, 5000);
+}
 
 // Recognizer tuning for continuous recitation: stream partial results with
 // several alternatives, and stretch the silence windows so a breath pause
@@ -62,14 +88,20 @@ export function useRecitationSession(
   // Word count of the last transcript onNoMatch fired for (avoids refiring
   // on every partial while the search is inconclusive).
   const noMatchFiredAtRef = useRef(0);
+  // Timestamp of the last recognizer event — the adoption watchdog uses it.
+  const lastEventAtRef = useRef(0);
 
   const applyCandidates = useCallback(
     (values: string[], isFinal: boolean) => {
       if (!activeRef.current || values.length === 0) return;
+      lastEventAtRef.current = Date.now();
+      // Until the session locks on (first real progress), search a wider
+      // window — the reciter may start mid-verse or continue past a jump.
       const { cursor: c, pos, missed: m } = alignCandidates(
         expectedRef.current,
         baseCursorRef.current,
-        values
+        values,
+        everMatchedRef.current ? 3 : 8
       );
       // A peek may have pushed the cursor past what this utterance derives —
       // progress never moves backwards. The live position, however, may.
@@ -77,6 +109,24 @@ export function useRecitationSession(
       cursorRef.current = next;
       setCursor(next);
       setLivePos(pos);
+
+      // Cross-utterance healing: a recently-flagged miss whose word shows up
+      // in THIS utterance was recognized late, not misread — retract it.
+      if (baseMissedRef.current.size > 0) {
+        const heardTokens = tokenize(values[0] ?? '');
+        let healed = false;
+        const healedBase = new Map(baseMissedRef.current);
+        for (const idx of healedBase.keys()) {
+          if (idx < next - 15) continue;
+          const w = expectedRef.current[idx];
+          if (heardTokens.some((h) => wordsSimilar(w, h))) {
+            healedBase.delete(idx);
+            healed = true;
+          }
+        }
+        if (healed) baseMissedRef.current = healedBase;
+      }
+
       const merged = new Map(baseMissedRef.current);
       for (const mw of m) merged.set(mw.index, mw.heard);
       // Preserve object identity when nothing changed — page components
@@ -107,7 +157,9 @@ export function useRecitationSession(
         const wordCount = (values[0] ?? '').trim().split(/\s+/).length;
         const progress = Math.max(0, next - baseCursorRef.current);
         const surplus = wordCount - progress;
-        const needed = everMatchedRef.current ? 5 : isFinal ? 3 : 4;
+        // Fresh sessions fire at 3 unmatched words (the search itself holds
+        // back on ambiguous short phrases); locked-on sessions need 5.
+        const needed = everMatchedRef.current ? 5 : 3;
         if (
           surplus >= needed &&
           wordCount >= noMatchFiredAtRef.current + 2
@@ -185,7 +237,9 @@ export function useRecitationSession(
     return () => {
       activeRef.current = false;
       if (restartTimer.current) clearTimeout(restartTimer.current);
-      Voice.destroy().catch(() => {});
+      // During a cross-surah handoff the engine must keep running — the
+      // incoming screen adopts the live utterance.
+      if (!pendingHandoff) Voice.destroy().catch(() => {});
     };
   }, [attachListeners]);
 
@@ -253,6 +307,32 @@ export function useRecitationSession(
   }, []);
 
   /**
+   * Adopt a live recognizer left running by the previous screen (cross-surah
+   * jump). Returns false when no handoff is pending. The ongoing utterance's
+   * transcript keeps flowing — aligned from wherever the session is anchored
+   * — so the reciter's words during the transition are not lost.
+   */
+  const adopt = useCallback(() => {
+    if (!pendingHandoff) return false;
+    pendingHandoff = false;
+    if (handoffSafety) clearTimeout(handoffSafety);
+    activeRef.current = true;
+    setActive(true);
+    everMatchedRef.current = false;
+    noMatchFiredAtRef.current = 0;
+    lastEventAtRef.current = Date.now();
+    attachListeners();
+    // The utterance may have ended during the transition — if no event
+    // arrives shortly, kick the recognizer back on.
+    setTimeout(() => {
+      if (activeRef.current && Date.now() - lastEventAtRef.current > 1400) {
+        restartRef.current();
+      }
+    }, 1500);
+    return true;
+  }, [attachListeners]);
+
+  /**
    * Jump the session to an arbitrary word index (voice verse search landed
    * somewhere else in the surah). Progress and highlight re-anchor there;
    * listening continues uninterrupted.
@@ -298,5 +378,6 @@ export function useRecitationSession(
     peekWord,
     dismissMiss,
     seekTo,
+    adopt,
   };
 }

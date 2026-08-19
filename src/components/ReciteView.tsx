@@ -19,7 +19,10 @@ import {
   findVerseByPhrase,
   stripLeadingBismillah,
 } from '../services/quranIndex';
-import { useRecitationSession } from '../hooks/useRecitationSession';
+import {
+  useRecitationSession,
+  prepareVoiceHandoff,
+} from '../hooks/useRecitationSession';
 import { tokenize, alignTranscript } from '../utils/recitationMatcher';
 import { Colors, Fonts } from '../constants/theme';
 import type { SurahDetail } from '../types';
@@ -223,7 +226,10 @@ export default function ReciteView({
             setTimeout(() => setFoundNote(null), 3000);
           }
         } else {
-          await sessionRef.current?.stop();
+          // Keep the microphone/utterance ALIVE across the navigation — the
+          // destination adopts it, so words spoken during the transition are
+          // not lost and the follow continues from where the reciter IS.
+          prepareVoiceHandoff();
           router.replace(
             `/recite/${match.surah}?ayah=${match.ayah}&w=${match.wordOffset}&auto=1&t=${encodeURIComponent(transcript)}`
           );
@@ -268,9 +274,19 @@ export default function ReciteView({
     if (!block) return;
     anchoredRef.current = true;
     const offset = Math.min(initialWord ?? 0, block.words.length - 1);
-    let anchor = block.startWord + Math.max(0, offset);
-    // Credit the words that triggered the jump — the reciter may already be
-    // mid-verse, and re-marking the beginning as "missed" would be wrong.
+    const rawAnchor = block.startWord + Math.max(0, offset);
+
+    if (autoStart && sessionRef.current?.adopt()) {
+      // Live handoff: the previous screen's utterance is still streaming.
+      // Anchor at the matched word — the ongoing transcript re-aligns from
+      // here and carries the cursor to wherever the reciter is right now.
+      seekTo(rawAnchor);
+      return;
+    }
+
+    // Cold start: credit the words that triggered the jump — the reciter may
+    // already be mid-verse, and re-marking the beginning as missed is wrong.
+    let anchor = rawAnchor;
     if (initialTranscript) {
       const credited = alignTranscript(
         expectedNorm,
