@@ -2,6 +2,18 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Voice from '@react-native-voice/voice';
 import { alignCandidates } from '../utils/recitationMatcher';
 
+// Recognizer tuning for continuous recitation: stream partial results with
+// several alternatives, and stretch the silence windows so a breath pause
+// does NOT end the utterance — utterance restarts are the biggest source of
+// reveal latency (each one costs ~0.5-1s of deaf time).
+const START_OPTS = {
+  EXTRA_PARTIAL_RESULTS: true,
+  EXTRA_MAX_RESULTS: 5,
+  EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS: 6000,
+  EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS: 6000,
+  EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS: 30000,
+};
+
 /**
  * Continuous recitation-follow session.
  *
@@ -67,7 +79,22 @@ export function useRecitationSession(
       setLivePos(pos);
       const merged = new Map(baseMissedRef.current);
       for (const mw of m) merged.set(mw.index, mw.heard);
-      setMissed(merged);
+      // Preserve object identity when nothing changed — page components
+      // memo-compare by reference, and a fresh Map every partial would
+      // force a full re-render of every mushaf page on each word.
+      setMissed((prev) => {
+        if (prev.size === merged.size) {
+          let same = true;
+          for (const [k, v] of merged) {
+            if (!prev.has(k) || prev.get(k) !== v) {
+              same = false;
+              break;
+            }
+          }
+          if (same) return prev;
+        }
+        return merged;
+      });
       if (next > sessionAnchorRef.current + 1) everMatchedRef.current = true;
 
       // Verse-search trigger: many heard words produced no cursor progress
@@ -137,23 +164,19 @@ export function useRecitationSession(
       if (!activeRef.current) return;
       attachListeners();
       try {
-        await Voice.start('ar-SA', {
-          EXTRA_PARTIAL_RESULTS: true,
-          EXTRA_MAX_RESULTS: 5,
-        });
+        await Voice.start('ar-SA', START_OPTS);
       } catch {
         // Recognizer busy — try once more shortly.
         restartTimer.current = setTimeout(() => {
           if (activeRef.current) {
             attachListeners();
-            Voice.start('ar-SA', {
-              EXTRA_PARTIAL_RESULTS: true,
-              EXTRA_MAX_RESULTS: 5,
-            }).catch(() => setError('Could not restart microphone'));
+            Voice.start('ar-SA', START_OPTS).catch(() =>
+              setError('Could not restart microphone')
+            );
           }
-        }, 600);
+        }, 400);
       }
-    }, 250);
+    }, 80);
   }, [attachListeners]);
   restartRef.current = restart;
 
@@ -186,10 +209,7 @@ export function useRecitationSession(
       if (!activeRef.current) return;
       attachListeners();
       try {
-        await Voice.start('ar-SA', {
-          EXTRA_PARTIAL_RESULTS: true,
-          EXTRA_MAX_RESULTS: 5,
-        });
+        await Voice.start('ar-SA', START_OPTS);
       } catch {
         activeRef.current = false;
         setActive(false);

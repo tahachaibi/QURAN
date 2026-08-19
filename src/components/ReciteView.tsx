@@ -462,6 +462,9 @@ export default function ReciteView({
         keyExtractor={(p) => (isSentinel(p) ? p.sentinel : String(p.page))}
         extraData={{ cursor, livePos, missed, peeked, mode }}
         initialScrollIndex={prevOffset}
+        windowSize={5}
+        maxToRenderPerBatch={3}
+        initialNumToRender={2}
         getItemLayout={(_, index) => ({
           length: pageWidth,
           offset: pageWidth * index,
@@ -787,6 +790,30 @@ const MushafPageView = React.memo(function MushafPageView({
         </View>
       </View>
     </View>
+  );
+},
+// Re-render a page ONLY when its own words change state. Cursor/livePos are
+// clamped to the page's word range — a movement entirely outside the page
+// looks identical from inside it, so hundreds of off-screen pages skip
+// re-rendering on every recognized word.
+(prev, next) => {
+  if (
+    prev.page !== next.page ||
+    prev.width !== next.width ||
+    prev.hidden !== next.hidden ||
+    prev.missed !== next.missed ||
+    prev.peeked !== next.peeked
+  ) {
+    return false;
+  }
+  const first = next.page.blocks[0];
+  const last = next.page.blocks[next.page.blocks.length - 1];
+  const start = first.startWord;
+  const end = last.startWord + last.words.length;
+  const clamp = (v: number) => (v < start ? start - 1 : v > end ? end + 1 : v);
+  return (
+    clamp(prev.cursor) === clamp(next.cursor) &&
+    clamp(prev.livePos) === clamp(next.livePos)
   );
 });
 
