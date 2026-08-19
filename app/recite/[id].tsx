@@ -5,12 +5,13 @@ import ReciteView from '../../src/components/ReciteView';
 import { Colors } from '../../src/constants/theme';
 
 export default function ReciteScreen() {
-  const { id, ayah, w, auto, t } = useLocalSearchParams<{
+  const { id, ayah, w, auto, t, e } = useLocalSearchParams<{
     id: string;
     ayah?: string;
     w?: string;
     auto?: string;
     t?: string;
+    e?: string;
   }>();
 
   return (
@@ -25,6 +26,7 @@ export default function ReciteScreen() {
         initialWord={w ? Number(w) : undefined}
         initialTranscript={t || undefined}
         autoStart={auto === '1'}
+        initialEngine={e === 'precise' ? 'precise' : undefined}
         showHeader
       />
     </SafeAreaView>

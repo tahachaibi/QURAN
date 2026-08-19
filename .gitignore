@@ -14,3 +14,8 @@ web-build/
 # Generated native projects (managed workflow — EAS runs prebuild in the cloud)
 android/
 ios/
+
+# Quran ASR server (local venv + downloaded model)
+server/.venv/
+server/models/
+__pycache__/

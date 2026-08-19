@@ -23,11 +23,16 @@ import {
   useRecitationSession,
   prepareVoiceHandoff,
 } from '../hooks/useRecitationSession';
+import { useWhisperSession } from '../hooks/useWhisperSession';
 import { tokenize, alignTranscript } from '../utils/recitationMatcher';
 import { Colors, Fonts } from '../constants/theme';
 import type { SurahDetail } from '../types';
 
 type FollowMode = 'follow' | 'memorize';
+type Engine = 'fast' | 'precise';
+
+// Injected by scripts/dev.sh when the Quran ASR server is running.
+const ASR_URL = (process.env.EXPO_PUBLIC_ASR_URL as string | undefined) ?? '';
 
 interface AyahWords {
   ayahIndex: number;
@@ -82,6 +87,8 @@ export interface ReciteViewProps {
   initialTranscript?: string;
   /** Start listening automatically after anchoring. */
   autoStart?: boolean;
+  /** Recognition engine to start with (carried across cross-surah jumps). */
+  initialEngine?: Engine;
   /** Render the surah header with a back button (standalone screen). */
   showHeader?: boolean;
 }
@@ -92,12 +99,16 @@ export default function ReciteView({
   initialWord,
   initialTranscript,
   autoStart,
+  initialEngine,
   showHeader,
 }: ReciteViewProps) {
   const [surah, setSurah] = useState<SurahDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [mode, setMode] = useState<FollowMode>('follow');
+  const [engine, setEngine] = useState<Engine>(
+    ASR_URL && initialEngine === 'precise' ? 'precise' : 'fast'
+  );
   const [seconds, setSeconds] = useState(0);
   const [mistakesOpen, setMistakesOpen] = useState(false);
   const [searching, setSearching] = useState(false);
@@ -226,12 +237,16 @@ export default function ReciteView({
             setTimeout(() => setFoundNote(null), 3000);
           }
         } else {
-          // Keep the microphone/utterance ALIVE across the navigation — the
-          // destination adopts it, so words spoken during the transition are
-          // not lost and the follow continues from where the reciter IS.
-          prepareVoiceHandoff();
+          if (engineRef.current === 'fast') {
+            // Keep the microphone/utterance ALIVE across the navigation —
+            // the destination adopts it, so words spoken during the
+            // transition are not lost.
+            prepareVoiceHandoff();
+          } else {
+            await sessionRef.current?.stop();
+          }
           router.replace(
-            `/recite/${match.surah}?ayah=${match.ayah}&w=${match.wordOffset}&auto=1&t=${encodeURIComponent(transcript)}`
+            `/recite/${match.surah}?ayah=${match.ayah}&w=${match.wordOffset}&auto=1&e=${engineRef.current}&t=${encodeURIComponent(transcript)}`
           );
         }
       } catch {
@@ -244,9 +259,33 @@ export default function ReciteView({
     [surahId]
   );
 
-  const session = useRecitationSession(expectedNorm, {
+  const engineRef = useRef(engine);
+  engineRef.current = engine;
+
+  // Whisper decoding hint: the next expected words from the cursor.
+  const getHint = useCallback((c: number) => {
+    const words: string[] = [];
+    for (const b of ayahBlocksRef.current) {
+      if (c >= b.startWord + b.words.length) continue;
+      for (let i = Math.max(0, c - b.startWord); i < b.words.length; i++) {
+        words.push(b.words[i]);
+        if (words.length >= 12) return words.join(' ');
+      }
+    }
+    return words.join(' ');
+  }, []);
+
+  // Both engines stay mounted (hooks can't be conditional); only the
+  // selected one is driven.
+  const voiceSession = useRecitationSession(expectedNorm, {
     onNoMatch: handleNoMatch,
   });
+  const whisperSession = useWhisperSession(expectedNorm, {
+    serverUrl: ASR_URL,
+    onNoMatch: handleNoMatch,
+    getHint,
+  });
+  const session = engine === 'precise' && ASR_URL ? whisperSession : voiceSession;
   const sessionRef = useRef<typeof session | null>(null);
   sessionRef.current = session;
   const {
@@ -579,6 +618,33 @@ export default function ReciteView({
         <TouchableOpacity onPress={handleReset} style={styles.resetBtn}>
           <Ionicons name="refresh" size={22} color={Colors.textSecondary} />
         </TouchableOpacity>
+
+        {ASR_URL ? (
+          <TouchableOpacity
+            onPress={() =>
+              !active && setEngine((e) => (e === 'fast' ? 'precise' : 'fast'))
+            }
+            disabled={active}
+            style={[
+              styles.engineBtn,
+              engine === 'precise' && styles.engineBtnPrecise,
+            ]}
+          >
+            <Ionicons
+              name={engine === 'precise' ? 'diamond' : 'flash'}
+              size={14}
+              color={engine === 'precise' ? '#fff' : Colors.primary}
+            />
+            <Text
+              style={[
+                styles.engineText,
+                engine === 'precise' && styles.engineTextActive,
+              ]}
+            >
+              {engine === 'precise' ? 'Precise' : 'Fast'}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
 
         {mode === 'memorize' && (
           <TouchableOpacity onPress={peekWord} style={styles.peekBtn}>
@@ -1049,6 +1115,18 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.successSoft,
   },
   peekText: { color: Colors.primary, fontSize: 13, fontWeight: '700' },
+  engineBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+    borderRadius: 14,
+    backgroundColor: Colors.accentSoft,
+  },
+  engineBtnPrecise: { backgroundColor: Colors.primary },
+  engineText: { color: Colors.primary, fontSize: 12.5, fontWeight: '700' },
+  engineTextActive: { color: '#fff' },
 
   micWrap: { width: 62, height: 62, alignItems: 'center', justifyContent: 'center' },
   micRing: {
