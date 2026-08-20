@@ -16,7 +16,9 @@ import {
  * both engines interchangeably.
  */
 
-const CHUNK_MS = 2800;
+// Whisper garbles very short clips — 4s chunks carry enough context for
+// clean transcripts while keeping the follow lag tolerable.
+const CHUNK_MS = 4000;
 
 const RECORDING_OPTS: Audio.RecordingOptions = {
   isMeteringEnabled: false,

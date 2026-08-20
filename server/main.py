@@ -15,6 +15,7 @@ Whisper's initial_prompt, biasing decoding toward the verse being recited.
 """
 import os
 import tempfile
+import time
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,18 +51,26 @@ async def transcribe(file: UploadFile = File(...), hint: str = Form("")):
         tmp.write(await file.read())
         path = tmp.name
     try:
-        segments, _info = model.transcribe(
+        t0 = time.time()
+        segments, info = model.transcribe(
             path,
             language="ar",
             task="transcribe",
-            beam_size=1,
+            beam_size=2,
             temperature=0.0,
             condition_on_previous_text=False,
             initial_prompt=hint or None,
-            vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 300},
+            # VAD off: recitation elongations (madd) look like silence to VAD
+            # and get chopped, garbling the transcript.
+            vad_filter=False,
         )
         text = " ".join(seg.text.strip() for seg in segments).strip()
+        dt = time.time() - t0
+        print(
+            f"[asr] {info.duration:.1f}s audio -> {dt:.1f}s infer | "
+            f"hint={'y' if hint else 'n'} | {text}",
+            flush=True,
+        )
         return {"text": text}
     finally:
         try:
