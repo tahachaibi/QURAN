@@ -120,6 +120,9 @@ export function useLocalWhisperSession(
   const noMatchFiredAtRef = useRef(0);
   const sliceTextsRef = useRef<Map<number, string>>(new Map());
   const transcriberRef = useRef<RealtimeTranscriber | null>(null);
+  // Incremented on every start/stop — a start superseded mid-download must
+  // not resurrect the session.
+  const startSeqRef = useRef(0);
 
   const applyFullText = useCallback(() => {
     if (!activeRef.current) return;
@@ -201,21 +204,31 @@ export function useLocalWhisperSession(
   }, []);
 
   const start = useCallback(async () => {
+    const seq = ++startSeqRef.current;
     setError(null);
-    setLastHeard('… loading model');
+    // Activate the UI IMMEDIATELY — the first run downloads ~85MB and loads
+    // the model, which takes a while; the reciter must see progress, and the
+    // stop button must be able to cancel.
+    activeRef.current = true;
+    setActive(true);
+    setLastHeard('… preparing model');
     let ctx: WhisperContext;
     try {
       ctx = await getWhisperContext(serverUrlRef.current, (pct) =>
-        setLastHeard(`⬇️ downloading model ${pct}%`)
+        setLastHeard(`⬇️ downloading model ${pct}% (one-time)`)
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Model unavailable');
-      setLastHeard(null);
+      if (seq === startSeqRef.current) {
+        activeRef.current = false;
+        setActive(false);
+        setError(e instanceof Error ? e.message : 'Model unavailable');
+        setLastHeard(null);
+      }
       return;
     }
+    // Stopped or restarted while the model was loading.
+    if (seq !== startSeqRef.current || !activeRef.current) return;
 
-    activeRef.current = true;
-    setActive(true);
     sessionBaseRef.current = cursorRef.current;
     everMatchedRef.current = false;
     noMatchFiredAtRef.current = 0;
@@ -257,6 +270,7 @@ export function useLocalWhisperSession(
   }, [applyFullText]);
 
   const stop = useCallback(async () => {
+    startSeqRef.current++;
     activeRef.current = false;
     setActive(false);
     // The session's confirmed misses become permanent on stop.

@@ -605,7 +605,7 @@ export default function ReciteView({
         </View>
       ) : null}
 
-      {engine === 'precise' && active && whisperSession.lastHeard ? (
+      {engine === 'precise' && whisperSession.lastHeard ? (
         <View style={styles.heardStrip}>
           <Text style={styles.heardText} numberOfLines={1}>
             {whisperSession.lastHeard}
