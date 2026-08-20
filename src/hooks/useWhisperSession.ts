@@ -93,6 +93,29 @@ export function useWhisperSession(
       everMatchedRef.current ? 3 : 8
     );
     const next = Math.max(c, cursorRef.current);
+    const advance = next - base;
+
+    // Before the session locks on, a 4s chunk of genuine recitation advances
+    // many words at once — a 1-2 word "advance" is a junk word fuzzily
+    // matching near the anchor. Junk must not move the cursor or anchor the
+    // session; treat the chunk as no-progress and feed the verse search with
+    // the FRESHEST words only (early chunks may be garbled — the search must
+    // see recent clean speech, not the stale head of the buffer).
+    const isRealProgress = advance >= (everMatchedRef.current ? 1 : 3);
+    if (!isRealProgress) {
+      if (onNoMatchRef.current && text.trim()) {
+        noMatchBufferRef.current.push(text);
+        const allWords = noMatchBufferRef.current.join(' ').trim().split(/\s+/);
+        const trimmed = allWords.slice(-12);
+        const needed = everMatchedRef.current ? 5 : 3;
+        if (trimmed.length >= needed) {
+          onNoMatchRef.current(trimmed.join(' '));
+        }
+      }
+      return;
+    }
+    everMatchedRef.current = true;
+    noMatchBufferRef.current = [];
 
     // Cross-chunk healing: a word flagged missed earlier that shows up in
     // this chunk was split across a boundary, not misread.
@@ -117,20 +140,6 @@ export function useWhisperSession(
     setCursor(next);
     setLivePos(pos);
     setMissed(merged);
-
-    if (next > base + 1) {
-      everMatchedRef.current = true;
-      noMatchBufferRef.current = [];
-    } else if (onNoMatchRef.current) {
-      // No progress — accumulate for the verse search.
-      noMatchBufferRef.current.push(text);
-      const joined = noMatchBufferRef.current.join(' ');
-      const words = joined.trim().split(/\s+/).length;
-      const needed = everMatchedRef.current ? 5 : 3;
-      if (words >= needed) {
-        onNoMatchRef.current(joined);
-      }
-    }
   }, []);
 
   const transcribeChunk = useCallback(async (uri: string) => {

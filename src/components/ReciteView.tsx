@@ -212,9 +212,14 @@ export default function ReciteView({
         // Nearly every surah opens with Bismillah — the words AFTER it are
         // what identify the verse, so search the stripped form first.
         const stripped = stripLeadingBismillah(heard);
+        // Last resort: the FRESHEST words alone — the head of the phrase may
+        // be recognizer garble from earlier chunks.
+        const tail = heard.length > 8 ? heard.slice(-8) : null;
         const match =
           (stripped && findVerseByPhrase(entries, stripped, surahId)) ||
-          findVerseByPhrase(entries, heard, surahId);
+          findVerseByPhrase(entries, heard, surahId) ||
+          (tail && findVerseByPhrase(entries, tail, surahId)) ||
+          null;
         if (!match) return;
         if (match.surah === surahId) {
           const block = ayahBlocksRef.current.find(
