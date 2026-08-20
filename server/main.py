@@ -19,7 +19,7 @@ import time
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from faster_whisper import WhisperModel
 
 GGML_PATH = os.path.join(
@@ -58,7 +58,12 @@ def model_file():
     """The on-device ggml model (see convert-ggml.sh) — the app downloads
     and caches this once, then Precise mode runs fully on the phone."""
     if not os.path.exists(GGML_PATH):
-        return {"error": "run: bash server/convert-ggml.sh"}
+        # A real 404 — the app checks the status code, and a 200 error-JSON
+        # would get cached as the model file and break initWhisper.
+        return JSONResponse(
+            status_code=404,
+            content={"error": "run: bash server/convert-ggml.sh"},
+        )
     return FileResponse(
         GGML_PATH,
         media_type="application/octet-stream",

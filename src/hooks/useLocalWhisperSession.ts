@@ -63,7 +63,23 @@ async function ensureModel(
   const res = await dl.downloadAsync();
   if (!res || res.status !== 200) {
     await FileSystem.deleteAsync(dest, { idempotent: true }).catch(() => {});
-    throw new Error('Model download failed — is the dev server running?');
+    if (res && res.status === 404) {
+      throw new Error(
+        'Model not on server yet — run: bash server/convert-ggml.sh, then restart scripts/dev.sh'
+      );
+    }
+    throw new Error(
+      `Model download failed (HTTP ${res?.status ?? '?'}) — is scripts/dev.sh running?`
+    );
+  }
+  // A tunnel/proxy error page or an error-JSON can still arrive as HTTP 200 —
+  // a real Whisper base model is >100MB; never hand a tiny file to whisper.cpp.
+  const dled = await FileSystem.getInfoAsync(dest);
+  if (!dled.exists || (dled.size ?? 0) < 10_000_000) {
+    await FileSystem.deleteAsync(dest, { idempotent: true }).catch(() => {});
+    throw new Error(
+      'Server sent an invalid model file — run: bash server/convert-ggml.sh, then restart scripts/dev.sh'
+    );
   }
   return dest;
 }
@@ -75,8 +91,16 @@ function getWhisperContext(
   if (!ctxPromise) {
     ctxPromise = (async () => {
       const path = await ensureModel(serverUrl, onProgress);
-      // whisper.cpp expects a plain filesystem path, not a file:// URI.
-      return initWhisper({ filePath: path.replace(/^file:\/\//, '') });
+      try {
+        // whisper.cpp expects a plain filesystem path, not a file:// URI.
+        return await initWhisper({ filePath: path.replace(/^file:\/\//, '') });
+      } catch (e) {
+        // Corrupt cache — drop it so the next attempt re-downloads.
+        await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
+        throw new Error(
+          `Model failed to load (${e instanceof Error ? e.message : String(e)}) — tap the mic to re-download`
+        );
+      }
     })().catch((e) => {
       ctxPromise = null; // allow retry
       throw e;
@@ -221,7 +245,7 @@ export function useLocalWhisperSession(
       if (seq === startSeqRef.current) {
         activeRef.current = false;
         setActive(false);
-        setError(e instanceof Error ? e.message : 'Model unavailable');
+        setError(e instanceof Error ? e.message : `Model unavailable: ${String(e)}`);
         setLastHeard(null);
       }
       return;
