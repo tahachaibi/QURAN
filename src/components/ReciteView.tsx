@@ -202,9 +202,13 @@ export default function ReciteView({
   const expectedNormRef = useRef<string[]>([]);
   expectedNormRef.current = expectedNorm;
 
+  const jumpCooldownRef = useRef(0);
   const handleNoMatch = useCallback(
     async (transcript: string) => {
       if (searchBusyRef.current) return;
+      // Just jumped: the transcript still carries the words that triggered it,
+      // so searching again would thrash. Let the reciter's fresh audio land.
+      if (Date.now() < jumpCooldownRef.current) return;
       searchBusyRef.current = true;
       setSearching(true);
       try {
@@ -238,6 +242,7 @@ export default function ReciteView({
               target,
               transcript
             ).cursor;
+            jumpCooldownRef.current = Date.now() + 1500;
             sessionRef.current?.seekTo(Math.max(target, credited));
             setFoundNote(`Jumped to verse ${match.ayah}`);
             setTimeout(() => setFoundNote(null), 3000);
@@ -306,6 +311,9 @@ export default function ReciteView({
     anchoredRef.current = true;
     const offset = Math.min(initialWord ?? 0, block.words.length - 1);
     const rawAnchor = block.startWord + Math.max(0, offset);
+    // We just landed from a jump; the transcript that brought us here would
+    // otherwise immediately trigger another search.
+    jumpCooldownRef.current = Date.now() + 1500;
 
     if (autoStart && sessionRef.current?.adopt()) {
       // Live handoff: the previous screen's utterance is still streaming.

@@ -192,9 +192,11 @@ export function useRecitationSession(
       restartRef.current();
     };
     Voice.onSpeechEnd = () => {
+      lastEventAtRef.current = Date.now();
       restartRef.current();
     };
     Voice.onSpeechError = (e: any) => {
+      lastEventAtRef.current = Date.now();
       const code = String(e.error?.code ?? '').split('/')[0];
       // Transient recognizer hiccups — normal during pauses in recitation.
       // 5 = client, 6 = speech timeout, 7 = no match, 8 = recognizer busy,
@@ -211,6 +213,7 @@ export function useRecitationSession(
 
   const restart = useCallback(() => {
     if (!activeRef.current) return;
+    lastEventAtRef.current = Date.now();
     if (restartTimer.current) clearTimeout(restartTimer.current);
     restartTimer.current = setTimeout(async () => {
       if (!activeRef.current) return;
@@ -232,6 +235,23 @@ export function useRecitationSession(
   }, [attachListeners]);
   restartRef.current = restart;
 
+  // Deaf-session watchdog. The recognizer can die silently — most often right
+  // after a cross-surah jump replaces the screen (Android tears the engine
+  // down mid-transition and no end/error event ever arrives), but also
+  // mid-session on some devices. Without this the UI stays "listening" while
+  // nothing is heard, which reads as "it stopped following me".
+  useEffect(() => {
+    if (!active) return;
+    const iv = setInterval(() => {
+      if (!activeRef.current) return;
+      if (Date.now() - lastEventAtRef.current > 2500) {
+        lastEventAtRef.current = Date.now();
+        restartRef.current();
+      }
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [active]);
+
   useEffect(() => {
     attachListeners();
     return () => {
@@ -250,12 +270,10 @@ export function useRecitationSession(
     sessionAnchorRef.current = cursorRef.current;
     everMatchedRef.current = false;
     noMatchFiredAtRef.current = 0;
+    lastEventAtRef.current = Date.now();
     attachListeners();
     try {
-      await Voice.start('ar-SA', {
-        EXTRA_PARTIAL_RESULTS: true,
-        EXTRA_MAX_RESULTS: 5,
-      });
+      await Voice.start('ar-SA', START_OPTS);
     } catch {
       // A predecessor screen may still be tearing its recognizer down
       // (cross-surah navigation) — retry once after it settles.
@@ -342,7 +360,12 @@ export function useRecitationSession(
     baseCursorRef.current = clamped;
     cursorRef.current = clamped;
     sessionAnchorRef.current = clamped;
-    everMatchedRef.current = true;
+    // Re-LOCK, don't assume lock: the reciter kept going while the search and
+    // navigation happened, so they are typically several words past the
+    // anchor by the time the next transcript arrives. A narrow 3-word window
+    // would never catch up and the cursor would sit frozen at the anchor.
+    everMatchedRef.current = false;
+    noMatchFiredAtRef.current = 0;
     setCursor(clamped);
     setLivePos(clamped);
   }, []);

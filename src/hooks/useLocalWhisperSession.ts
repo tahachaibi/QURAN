@@ -5,12 +5,6 @@ import * as FileSystem from 'expo-file-system';
 // Metro and TypeScript (typed via src/types/whisper-rn.d.ts).
 import { initWhisper } from 'whisper.rn/lib/module/index';
 import type { WhisperContext } from 'whisper.rn/lib/module/index';
-import {
-  RealtimeTranscriber,
-} from 'whisper.rn/lib/module/realtime-transcription/index';
-import type {
-  RealtimeTranscribeEvent,
-} from 'whisper.rn/lib/module/realtime-transcription/index';
 import { AudioPcmStreamAdapter } from 'whisper.rn/lib/module/realtime-transcription/adapters/AudioPcmStreamAdapter';
 import {
   alignTranscript,
@@ -20,17 +14,38 @@ import {
 
 /**
  * "Precise" engine, ON-DEVICE: the Tarteel Quran-tuned Whisper model runs on
- * the phone via whisper.cpp with one CONTINUOUS audio stream — no chunk
- * files, no word-slicing at boundaries, no server round-trips, fully
- * offline once the model is cached.
+ * the phone via whisper.cpp over one CONTINUOUS PCM stream.
  *
- * The model (~85MB ggml) is downloaded once from the dev server
+ * The transcription loop is deliberately NOT whisper.rn's RealtimeTranscriber:
+ * that class queues a re-transcription of the whole growing slice every 200ms
+ * while each pass takes seconds on a phone CPU, so the queue backlog explodes
+ * and updates stop arriving. Here a single pump transcribes the FRESHEST
+ * audio snapshot, waits for it to finish, then immediately transcribes
+ * whatever is fresh now — zero backlog by construction. Slices are cut at
+ * breath pauses (tail silence), so no word is split at a boundary.
+ *
+ * The model (~80MB ggml) is downloaded once from the dev server
  * (EXPO_PUBLIC_ASR_URL/model) into the app's documents directory.
  *
  * Mirrors useRecitationSession's return shape.
  */
 
 const MODEL_FILE = 'ggml-quran.bin';
+
+// 16kHz mono s16le.
+const BYTES_PER_SEC = 32000;
+// Don't bother transcribing less than this much audio.
+const MIN_FIRST_BYTES = Math.round(0.7 * BYTES_PER_SEC);
+// A new pass needs at least this much fresh audio since the last one.
+const MIN_NEW_BYTES = Math.round(0.3 * BYTES_PER_SEC);
+// From here on, cut the slice at the next breath pause…
+const SOFT_SLICE_BYTES = 10 * BYTES_PER_SEC;
+// …and here cut unconditionally (keeping 1s overlap so no word is lost).
+const HARD_SLICE_BYTES = 16 * BYTES_PER_SEC;
+const HARD_OVERLAP_BYTES = 1 * BYTES_PER_SEC;
+// "Breath pause": RMS of the trailing window below this (int16 scale).
+const SILENCE_TAIL_BYTES = Math.round(0.35 * BYTES_PER_SEC);
+const SILENCE_RMS = 350;
 
 // whisper.rn's native layer rejects promises with a plain {message, code}
 // object, not an Error — extract the human-readable part from anything.
@@ -45,10 +60,6 @@ function errText(e: unknown): string {
     return String(e);
   }
 }
-
-// Module-level so the loaded model survives screen remounts (loading takes
-// a few seconds; the weights are ~150MB in RAM).
-let ctxPromise: Promise<WhisperContext> | null = null;
 
 // ggml whisper models start with int32 0x67676d6c ("ggml") — little-endian
 // on disk that's the ASCII bytes "lmgg", which is "bG1nZw==" in base64.
@@ -138,6 +149,10 @@ async function ensureModel(
   return dest;
 }
 
+// Module-level so the loaded model survives screen remounts (loading takes
+// a few seconds; the weights are ~150MB in RAM).
+let ctxPromise: Promise<WhisperContext> | null = null;
+
 function getWhisperContext(
   serverUrl: string,
   onProgress: (pct: number) => void
@@ -166,6 +181,32 @@ function getWhisperContext(
     });
   }
   return ctxPromise;
+}
+
+function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return out;
+}
+
+function tailIsSilent(buf: Uint8Array): boolean {
+  const tail = Math.min(SILENCE_TAIL_BYTES, buf.length) & ~1;
+  if (tail < 3200) return false;
+  const start = buf.length - tail;
+  let sumSq = 0;
+  const n = tail / 2;
+  for (let i = 0; i < n; i++) {
+    const lo = buf[start + i * 2];
+    const hi = buf[start + i * 2 + 1];
+    let s = (hi << 8) | lo;
+    if (s >= 0x8000) s -= 0x10000;
+    sumSq += s * s;
+  }
+  return Math.sqrt(sumSq / n) < SILENCE_RMS;
 }
 
 export interface LocalWhisperOptions {
@@ -202,10 +243,23 @@ export function useLocalWhisperSession(
   const everMatchedRef = useRef(false);
   const noMatchFiredAtRef = useRef(0);
   const sliceTextsRef = useRef<Map<number, string>>(new Map());
-  const transcriberRef = useRef<RealtimeTranscriber | null>(null);
   // Incremented on every start/stop — a start superseded mid-download must
   // not resurrect the session.
   const startSeqRef = useRef(0);
+  // Incremented on seekTo — an in-flight pass from before the jump must not
+  // write its stale text into the fresh session.
+  const epochRef = useRef(0);
+
+  // ── Streaming state ──
+  const ctxRef = useRef<WhisperContext | null>(null);
+  const adapterRef = useRef<AudioPcmStreamAdapter | null>(null);
+  const chunksRef = useRef<Uint8Array[]>([]);
+  const bytesRef = useRef(0);
+  const lastPassBytesRef = useRef(0);
+  const busyRef = useRef(false);
+  const sliceIdxRef = useRef(0);
+  const taskRef = useRef<{ stop: () => Promise<void> } | null>(null);
+  const pumpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const applyFullText = useCallback(() => {
     if (!activeRef.current) return;
@@ -286,10 +340,103 @@ export function useLocalWhisperSession(
     });
   }, []);
 
+  // One transcription at a time, always over the freshest audio. Re-arms
+  // itself after every pass; cheap no-op when there's nothing new.
+  const pump = useCallback(async () => {
+    if (!activeRef.current || busyRef.current) return;
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+    const total = bytesRef.current;
+    const minBytes = sliceTextsRef.current.get(sliceIdxRef.current)
+      ? MIN_NEW_BYTES
+      : MIN_FIRST_BYTES;
+    if (total < minBytes) return;
+    if (total - lastPassBytesRef.current < MIN_NEW_BYTES) return;
+
+    busyRef.current = true;
+    const seq = startSeqRef.current;
+    const epoch = epochRef.current;
+    const slice = sliceIdxRef.current;
+    const buf = concatChunks(chunksRef.current, total);
+    try {
+      const durSec = buf.length / BYTES_PER_SEC;
+      // audio_ctx trick: only encode as many frames as the audio needs
+      // (50/s) — cuts the fixed 30s-window encode cost massively.
+      const audioCtx = Math.min(1500, Math.ceil(durSec * 50) + 64);
+      const task = ctx.transcribeData(buf.buffer as ArrayBuffer, {
+        language: 'ar',
+        temperature: 0,
+        maxThreads: 4,
+        audioCtx,
+      } as Parameters<WhisperContext['transcribeData']>[1]);
+      taskRef.current = task;
+      const res = await task.promise;
+      taskRef.current = null;
+      if (
+        seq !== startSeqRef.current ||
+        epoch !== epochRef.current ||
+        !activeRef.current
+      ) {
+        return;
+      }
+      lastPassBytesRef.current = total;
+      const text = (res?.result ?? '').replace(/\[[^\]]*\]/g, ' ').trim();
+      sliceTextsRef.current.set(slice, text);
+      if (text) setLastHeard(text);
+      applyFullText();
+
+      // Slice rollover — at a breath pause once long enough, or forcibly
+      // (with 1s overlap) if the reciter never pauses.
+      if (
+        bytesRef.current >= HARD_SLICE_BYTES ||
+        (bytesRef.current >= SOFT_SLICE_BYTES && tailIsSilent(buf))
+      ) {
+        const whole = concatChunks(chunksRef.current, bytesRef.current);
+        const keep =
+          bytesRef.current >= HARD_SLICE_BYTES
+            ? whole.slice(whole.length - HARD_OVERLAP_BYTES)
+            : null;
+        sliceIdxRef.current = slice + 1;
+        chunksRef.current = keep ? [keep] : [];
+        bytesRef.current = keep ? keep.length : 0;
+        lastPassBytesRef.current = 0;
+      }
+    } catch (e) {
+      taskRef.current = null;
+      if (seq === startSeqRef.current && activeRef.current) {
+        setError(errText(e));
+      }
+    } finally {
+      busyRef.current = false;
+      if (activeRef.current) {
+        if (pumpTimerRef.current) clearTimeout(pumpTimerRef.current);
+        pumpTimerRef.current = setTimeout(() => void pump(), 150);
+      }
+    }
+  }, [applyFullText]);
+  const pumpRef = useRef(pump);
+  pumpRef.current = pump;
+
+  const stopStream = useCallback(async () => {
+    if (pumpTimerRef.current) {
+      clearTimeout(pumpTimerRef.current);
+      pumpTimerRef.current = null;
+    }
+    const task = taskRef.current;
+    taskRef.current = null;
+    await task?.stop().catch(() => {});
+    const adapter = adapterRef.current;
+    adapterRef.current = null;
+    if (adapter) {
+      await adapter.stop().catch(() => {});
+      await adapter.release().catch(() => {});
+    }
+  }, []);
+
   const start = useCallback(async () => {
     const seq = ++startSeqRef.current;
     setError(null);
-    // Activate the UI IMMEDIATELY — the first run downloads ~85MB and loads
+    // Activate the UI IMMEDIATELY — the first run downloads ~80MB and loads
     // the model, which takes a while; the reciter must see progress, and the
     // stop button must be able to cancel.
     activeRef.current = true;
@@ -311,46 +458,45 @@ export function useLocalWhisperSession(
     }
     // Stopped or restarted while the model was loading.
     if (seq !== startSeqRef.current || !activeRef.current) return;
+    ctxRef.current = ctx;
 
     sessionBaseRef.current = cursorRef.current;
     everMatchedRef.current = false;
     noMatchFiredAtRef.current = 0;
     sliceTextsRef.current = new Map();
+    sliceIdxRef.current = 0;
+    chunksRef.current = [];
+    bytesRef.current = 0;
+    lastPassBytesRef.current = 0;
+    busyRef.current = false;
     setLastHeard('🎧 listening…');
 
     try {
-      const audioStream = new AudioPcmStreamAdapter();
-      const transcriber = new RealtimeTranscriber(
-        { whisperContext: ctx, audioStream },
-        {
-          audioSliceSec: 25,
-          audioMinSec: 0.8,
-          audioStreamConfig: { sampleRate: 16000, channels: 1 },
-          // Alignment handles continuity across slices; prompting previous
-          // slices makes Whisper echo them, corrupting the verse search.
-          promptPreviousSlices: false,
-          transcribeOptions: { language: 'ar', temperature: 0 },
-        },
-        {
-          onTranscribe: (evt: RealtimeTranscribeEvent) => {
-            const text = evt.data?.result ?? '';
-            sliceTextsRef.current.set(evt.sliceIndex, text);
-            if (text.trim()) setLastHeard(text.trim());
-            applyFullText();
-          },
-          onError: (err: string) => {
-            if (activeRef.current) setError(String(err));
-          },
-        }
-      );
-      transcriberRef.current = transcriber;
-      await transcriber.start();
+      const adapter = new AudioPcmStreamAdapter();
+      adapter.onData((sd: { data: Uint8Array }) => {
+        if (!activeRef.current || seq !== startSeqRef.current) return;
+        chunksRef.current.push(sd.data);
+        bytesRef.current += sd.data.length;
+        void pumpRef.current();
+      });
+      adapter.onError((err: string) => {
+        if (activeRef.current) setError(String(err));
+      });
+      await adapter.initialize({
+        sampleRate: 16000,
+        channels: 1,
+        bitsPerSample: 16,
+        audioSource: 6, // VOICE_RECOGNITION
+        bufferSize: 16 * 1024,
+      });
+      await adapter.start();
+      adapterRef.current = adapter;
     } catch (e) {
       activeRef.current = false;
       setActive(false);
       setError(`Could not start microphone (${errText(e)})`);
     }
-  }, [applyFullText]);
+  }, []);
 
   const stop = useCallback(async () => {
     startSeqRef.current++;
@@ -369,15 +515,8 @@ export function useLocalWhisperSession(
       for (const mw of m) merged.set(mw.index, mw.heard);
       baseMissedRef.current = merged;
     }
-    const t = transcriberRef.current;
-    transcriberRef.current = null;
-    try {
-      await t?.stop();
-      await t?.release();
-    } catch {
-      // already stopped
-    }
-  }, []);
+    await stopStream();
+  }, [stopStream]);
 
   const reset = useCallback(async () => {
     await stop();
@@ -425,8 +564,21 @@ export function useLocalWhisperSession(
     const clamped = Math.max(0, Math.min(index, expectedRef.current.length));
     cursorRef.current = clamped;
     sessionBaseRef.current = clamped;
+    // Fresh alignment epoch: drop buffered audio and any in-flight pass —
+    // the words recited BEFORE the jump must not re-align from the new base.
+    epochRef.current++;
     sliceTextsRef.current = new Map();
-    everMatchedRef.current = true;
+    sliceIdxRef.current++;
+    chunksRef.current = [];
+    bytesRef.current = 0;
+    lastPassBytesRef.current = 0;
+    const task = taskRef.current;
+    taskRef.current = null;
+    task?.stop().catch(() => {});
+    // Wide re-lock window (8 words) until real progress: the reciter kept
+    // going while the jump happened and is likely a few words past the
+    // anchor by the time fresh audio arrives.
+    everMatchedRef.current = false;
     noMatchFiredAtRef.current = 0;
     setCursor(clamped);
     setLivePos(clamped);
@@ -437,14 +589,11 @@ export function useLocalWhisperSession(
 
   useEffect(() => {
     return () => {
+      startSeqRef.current++;
       activeRef.current = false;
-      const t = transcriberRef.current;
-      transcriberRef.current = null;
-      t?.stop()
-        .then(() => t.release())
-        .catch(() => {});
+      void stopStream();
     };
-  }, []);
+  }, [stopStream]);
 
   return {
     cursor,
