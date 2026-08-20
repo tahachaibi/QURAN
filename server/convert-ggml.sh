@@ -60,5 +60,9 @@ else
   mv "$F16" "$OUT"
 fi
 
+# The converter writes config.json's max_length (1024, a generation
+# setting) as n_text_ctx; the real decoder context is 448. Fix in place.
+bash fix-ggml-header.sh
+
 ls -lh "$OUT"
 echo "== Done. The app downloads this via the dev server on first Precise use. =="
