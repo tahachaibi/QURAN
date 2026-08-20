@@ -47,9 +47,16 @@ def health():
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...), hint: str = Form("")):
     suffix = os.path.splitext(file.filename or "chunk.m4a")[1] or ".m4a"
+    data = await file.read()
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp.write(await file.read())
+        tmp.write(data)
         path = tmp.name
+    # Keep the latest chunk for diagnosis (server/diagnose.py).
+    try:
+        with open("/tmp/last-chunk" + suffix, "wb") as dbg:
+            dbg.write(data)
+    except OSError:
+        pass
     try:
         t0 = time.time()
         segments, info = model.transcribe(
