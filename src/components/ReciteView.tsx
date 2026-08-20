@@ -23,7 +23,7 @@ import {
   useRecitationSession,
   prepareVoiceHandoff,
 } from '../hooks/useRecitationSession';
-import { useWhisperSession } from '../hooks/useWhisperSession';
+import { useLocalWhisperSession } from '../hooks/useLocalWhisperSession';
 import { tokenize, alignTranscript } from '../utils/recitationMatcher';
 import { Colors, Fonts } from '../constants/theme';
 import type { SurahDetail } from '../types';
@@ -31,7 +31,8 @@ import type { SurahDetail } from '../types';
 type FollowMode = 'follow' | 'memorize';
 type Engine = 'fast' | 'precise';
 
-// Injected by scripts/dev.sh when the Quran ASR server is running.
+// Injected by scripts/dev.sh — used only to download the on-device model
+// the first time; after that Precise mode is fully offline.
 const ASR_URL = (process.env.EXPO_PUBLIC_ASR_URL as string | undefined) ?? '';
 
 interface AyahWords {
@@ -107,7 +108,7 @@ export default function ReciteView({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [mode, setMode] = useState<FollowMode>('follow');
   const [engine, setEngine] = useState<Engine>(
-    ASR_URL && initialEngine === 'precise' ? 'precise' : 'fast'
+    initialEngine === 'precise' ? 'precise' : 'fast'
   );
   const [seconds, setSeconds] = useState(0);
   const [mistakesOpen, setMistakesOpen] = useState(false);
@@ -267,30 +268,16 @@ export default function ReciteView({
   const engineRef = useRef(engine);
   engineRef.current = engine;
 
-  // Whisper decoding hint: the next expected words from the cursor.
-  const getHint = useCallback((c: number) => {
-    const words: string[] = [];
-    for (const b of ayahBlocksRef.current) {
-      if (c >= b.startWord + b.words.length) continue;
-      for (let i = Math.max(0, c - b.startWord); i < b.words.length; i++) {
-        words.push(b.words[i]);
-        if (words.length >= 12) return words.join(' ');
-      }
-    }
-    return words.join(' ');
-  }, []);
-
   // Both engines stay mounted (hooks can't be conditional); only the
   // selected one is driven.
   const voiceSession = useRecitationSession(expectedNorm, {
     onNoMatch: handleNoMatch,
   });
-  const whisperSession = useWhisperSession(expectedNorm, {
+  const whisperSession = useLocalWhisperSession(expectedNorm, {
     serverUrl: ASR_URL,
     onNoMatch: handleNoMatch,
-    getHint,
   });
-  const session = engine === 'precise' && ASR_URL ? whisperSession : voiceSession;
+  const session = engine === 'precise' ? whisperSession : voiceSession;
   const sessionRef = useRef<typeof session | null>(null);
   sessionRef.current = session;
   const {
@@ -505,32 +492,30 @@ export default function ReciteView({
             </TouchableOpacity>
           ))}
         </View>
-        {ASR_URL ? (
-          <TouchableOpacity
-            onPress={() =>
-              !active && setEngine((e) => (e === 'fast' ? 'precise' : 'fast'))
-            }
-            disabled={active}
+        <TouchableOpacity
+          onPress={() =>
+            !active && setEngine((e) => (e === 'fast' ? 'precise' : 'fast'))
+          }
+          disabled={active}
+          style={[
+            styles.engineBtn,
+            engine === 'precise' && styles.engineBtnPrecise,
+          ]}
+        >
+          <Ionicons
+            name={engine === 'precise' ? 'diamond' : 'flash'}
+            size={14}
+            color={engine === 'precise' ? '#fff' : Colors.primary}
+          />
+          <Text
             style={[
-              styles.engineBtn,
-              engine === 'precise' && styles.engineBtnPrecise,
+              styles.engineText,
+              engine === 'precise' && styles.engineTextActive,
             ]}
           >
-            <Ionicons
-              name={engine === 'precise' ? 'diamond' : 'flash'}
-              size={14}
-              color={engine === 'precise' ? '#fff' : Colors.primary}
-            />
-            <Text
-              style={[
-                styles.engineText,
-                engine === 'precise' && styles.engineTextActive,
-              ]}
-            >
-              {engine === 'precise' ? 'Precise' : 'Fast'}
-            </Text>
-          </TouchableOpacity>
-        ) : null}
+            {engine === 'precise' ? 'Precise' : 'Fast'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {/* Progress bar */}

@@ -19,7 +19,12 @@ import time
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from faster_whisper import WhisperModel
+
+GGML_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "models", "ggml-quran.bin"
+)
 
 MODEL_DIR = os.environ.get(
     "MODEL_DIR",
@@ -41,7 +46,24 @@ print("[quran-asr] model ready")
 
 @app.get("/health")
 def health():
-    return {"ok": True, "model": os.path.basename(MODEL_DIR)}
+    return {
+        "ok": True,
+        "model": os.path.basename(MODEL_DIR),
+        "ggml": os.path.exists(GGML_PATH),
+    }
+
+
+@app.get("/model")
+def model_file():
+    """The on-device ggml model (see convert-ggml.sh) — the app downloads
+    and caches this once, then Precise mode runs fully on the phone."""
+    if not os.path.exists(GGML_PATH):
+        return {"error": "run: bash server/convert-ggml.sh"}
+    return FileResponse(
+        GGML_PATH,
+        media_type="application/octet-stream",
+        filename="ggml-quran.bin",
+    )
 
 
 @app.post("/transcribe")
