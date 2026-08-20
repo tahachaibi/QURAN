@@ -32,6 +32,20 @@ import {
 
 const MODEL_FILE = 'ggml-quran.bin';
 
+// whisper.rn's native layer rejects promises with a plain {message, code}
+// object, not an Error — extract the human-readable part from anything.
+function errText(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === 'object' && 'message' in e) {
+    return String((e as { message: unknown }).message);
+  }
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}
+
 // Module-level so the loaded model survives screen remounts (loading takes
 // a few seconds; the weights are ~150MB in RAM).
 let ctxPromise: Promise<WhisperContext> | null = null;
@@ -143,7 +157,7 @@ function getWhisperContext(
         // Corrupt cache — drop it so the next attempt re-downloads.
         await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
         throw new Error(
-          `Model failed to load (${e instanceof Error ? e.message : String(e)}) — tap the mic to re-download`
+          `Model failed to load (${errText(e)}) — tap the mic to re-download`
         );
       }
     })().catch((e) => {
@@ -290,7 +304,7 @@ export function useLocalWhisperSession(
       if (seq === startSeqRef.current) {
         activeRef.current = false;
         setActive(false);
-        setError(e instanceof Error ? e.message : `Model unavailable: ${String(e)}`);
+        setError(errText(e));
         setLastHeard(null);
       }
       return;
@@ -334,7 +348,7 @@ export function useLocalWhisperSession(
     } catch (e) {
       activeRef.current = false;
       setActive(false);
-      setError(e instanceof Error ? e.message : 'Could not start microphone');
+      setError(`Could not start microphone (${errText(e)})`);
     }
   }, [applyFullText]);
 
