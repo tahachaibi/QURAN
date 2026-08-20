@@ -43,13 +43,14 @@ F16=models/ggml-model.bin
 [ -f "$F16" ] || { echo "conversion failed — $F16 missing"; exit 1; }
 
 echo "== Building quantizer =="
-if [ ! -x /tmp/whisper.cpp/build/bin/quantize ]; then
-  cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -DCMAKE_BUILD_TYPE=Release \
-    -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON >/dev/null
-  cmake --build /tmp/whisper.cpp/build -j --target quantize >/dev/null
-fi
+# Newer whisper.cpp names the tool whisper-quantize; older ones quantize.
+cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -DCMAKE_BUILD_TYPE=Release \
+  -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON >/dev/null || true
+cmake --build /tmp/whisper.cpp/build -j --target whisper-quantize >/dev/null 2>&1 \
+  || cmake --build /tmp/whisper.cpp/build -j --target quantize >/dev/null 2>&1 \
+  || true
 
-QUANTIZE=$(find /tmp/whisper.cpp/build -name quantize -type f | head -1)
+QUANTIZE=$(find /tmp/whisper.cpp/build \( -name whisper-quantize -o -name quantize \) -type f -perm -u+x | head -1)
 if [ -n "$QUANTIZE" ]; then
   echo "== Quantizing to q8_0 =="
   "$QUANTIZE" "$F16" "$OUT" q8_0
