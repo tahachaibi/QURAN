@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as FileSystem from 'expo-file-system';
-import { initWhisper } from 'whisper.rn/index';
-import type { WhisperContext } from 'whisper.rn/index';
-import { RealtimeTranscriber } from 'whisper.rn/realtime-transcription/index';
-import type { RealtimeTranscribeEvent } from 'whisper.rn/realtime-transcription/index';
-import { AudioPcmStreamAdapter } from 'whisper.rn/realtime-transcription/adapters/AudioPcmStreamAdapter';
+// Direct file-path imports: Expo SDK 52's Metro does not read the package
+// "exports" map, and the map has no bare "." entry — real paths work in both
+// Metro and TypeScript (typed via src/types/whisper-rn.d.ts).
+import { initWhisper } from 'whisper.rn/lib/module/index';
+import type { WhisperContext } from 'whisper.rn/lib/module/index';
+import {
+  RealtimeTranscriber,
+} from 'whisper.rn/lib/module/realtime-transcription/index';
+import type {
+  RealtimeTranscribeEvent,
+} from 'whisper.rn/lib/module/realtime-transcription/index';
+import { AudioPcmStreamAdapter } from 'whisper.rn/lib/module/realtime-transcription/adapters/AudioPcmStreamAdapter';
 import {
   alignTranscript,
   tokenize,
