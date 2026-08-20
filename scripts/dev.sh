@@ -15,8 +15,18 @@ if [ ! -x "$HOME/cloudflared" ]; then
 fi
 
 PIDS=()
-cleanup() { for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done; }
+cleanup() {
+  for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
+  pkill -f "uvicorn main:app" 2>/dev/null || true
+  pkill -f "cloudflared tunnel" 2>/dev/null || true
+}
 trap cleanup EXIT
+
+# Kill stragglers from previous runs — a leftover uvicorn keeps the port and
+# silently serves STALE code while the new server fails to bind.
+pkill -f "uvicorn main:app" 2>/dev/null || true
+pkill -f "cloudflared tunnel" 2>/dev/null || true
+sleep 1
 
 tunnel_url() { # $1=logfile — wait for a trycloudflare URL to appear
   local url=""
