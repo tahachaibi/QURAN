@@ -138,8 +138,14 @@ export function useWhisperSession(
       name: 'chunk.m4a',
       type: 'audio/mp4',
     } as unknown as Blob);
-    const hint = getHintRef.current?.(cursorRef.current) ?? '';
-    if (hint) form.append('hint', hint);
+    // Only bias decoding with the expected text once the session has locked
+    // onto the reciter. Before that, Whisper tends to ECHO the prompt — so a
+    // reciter of a DIFFERENT surah would get transcripts of this surah's
+    // words, silently blocking the verse search.
+    if (everMatchedRef.current) {
+      const hint = getHintRef.current?.(cursorRef.current) ?? '';
+      if (hint) form.append('hint', hint);
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 25000);
     try {
