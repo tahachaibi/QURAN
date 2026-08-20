@@ -59,6 +59,8 @@ export function useWhisperSession(
   const [peeked, setPeeked] = useState<Set<number>>(new Set());
   const [active, setActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Latest server transcript (or status) — surfaced for visibility. */
+  const [lastHeard, setLastHeard] = useState<string | null>(null);
 
   const expectedRef = useRef(expectedNorm);
   expectedRef.current = expectedNorm;
@@ -77,6 +79,7 @@ export function useWhisperSession(
   const recRef = useRef<Audio.Recording | null>(null);
   // Serializes transcript application so chunks apply in recording order.
   const chainRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingRef = useRef(0);
 
   const applyChunk = useCallback((text: string) => {
     if (!activeRef.current || !text.trim()) return;
@@ -138,7 +141,7 @@ export function useWhisperSession(
     const hint = getHintRef.current?.(cursorRef.current) ?? '';
     if (hint) form.append('hint', hint);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
+    const timer = setTimeout(() => controller.abort(), 25000);
     try {
       const res = await fetch(`${serverUrlRef.current}/transcribe`, {
         method: 'POST',
@@ -179,12 +182,29 @@ export function useWhisperSession(
       const uri = rec.getURI();
       recRef.current = null;
       if (uri && activeRef.current) {
+        if (pendingRef.current >= 3) {
+          // Server can't keep up — drop this chunk rather than falling
+          // minutes behind. Healing absorbs an occasional lost chunk.
+          setLastHeard('⏳ server busy — skipped a chunk');
+          continue;
+        }
+        pendingRef.current += 1;
         // Transcribe in the background (ordered) while the next chunk records.
         chainRef.current = chainRef.current
           .then(() => transcribeChunk(uri))
-          .then((text) => applyChunk(text))
-          .catch(() => {
-            if (activeRef.current) setError('ASR server unreachable');
+          .then((text) => {
+            setLastHeard(text.trim() ? text.trim() : '🔇 (silence)');
+            applyChunk(text);
+          })
+          .catch((e: unknown) => {
+            if (activeRef.current) {
+              const msg = e instanceof Error ? e.message : 'unreachable';
+              setLastHeard(null);
+              setError(`ASR server: ${msg}`);
+            }
+          })
+          .then(() => {
+            pendingRef.current -= 1;
           });
       }
     }
@@ -205,6 +225,11 @@ export function useWhisperSession(
     setActive(true);
     everMatchedRef.current = false;
     noMatchBufferRef.current = [];
+    setLastHeard('… connecting to ASR server');
+    // Warm the tunnel + model so the first real chunk is fast.
+    fetch(`${serverUrlRef.current}/health`)
+      .then(() => setLastHeard('🎯 listening…'))
+      .catch(() => setError('ASR server unreachable — is scripts/dev.sh running?'));
     recordLoop();
   }, [recordLoop]);
 
@@ -280,6 +305,7 @@ export function useWhisperSession(
     peeked,
     active,
     error,
+    lastHeard,
     start,
     stop,
     reset,

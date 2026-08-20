@@ -477,27 +477,55 @@ export default function ReciteView({
         </View>
       ) : null}
 
-      {/* Mode toggle */}
-      <View style={styles.modeTabs}>
-        {(['follow', 'memorize'] as FollowMode[]).map((m) => (
+      {/* Mode toggle + engine chip share one tidy row */}
+      <View style={styles.controlsRow}>
+        <View style={styles.modeTabs}>
+          {(['follow', 'memorize'] as FollowMode[]).map((m) => (
+            <TouchableOpacity
+              key={m}
+              style={[styles.modeTab, mode === m && styles.modeTabActive]}
+              onPress={() => setMode(m)}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name={m === 'follow' ? 'eye-outline' : 'eye-off-outline'}
+                size={15}
+                color={mode === m ? '#fff' : Colors.textSecondary}
+              />
+              <Text
+                style={[styles.modeTabText, mode === m && styles.modeTabTextActive]}
+              >
+                {m === 'follow' ? 'Follow' : 'Hidden'}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        {ASR_URL ? (
           <TouchableOpacity
-            key={m}
-            style={[styles.modeTab, mode === m && styles.modeTabActive]}
-            onPress={() => setMode(m)}
-            activeOpacity={0.8}
+            onPress={() =>
+              !active && setEngine((e) => (e === 'fast' ? 'precise' : 'fast'))
+            }
+            disabled={active}
+            style={[
+              styles.engineBtn,
+              engine === 'precise' && styles.engineBtnPrecise,
+            ]}
           >
             <Ionicons
-              name={m === 'follow' ? 'eye-outline' : 'eye-off-outline'}
-              size={15}
-              color={mode === m ? '#fff' : Colors.textSecondary}
+              name={engine === 'precise' ? 'diamond' : 'flash'}
+              size={14}
+              color={engine === 'precise' ? '#fff' : Colors.primary}
             />
             <Text
-              style={[styles.modeTabText, mode === m && styles.modeTabTextActive]}
+              style={[
+                styles.engineText,
+                engine === 'precise' && styles.engineTextActive,
+              ]}
             >
-              {m === 'follow' ? 'Follow' : 'Hidden'}
+              {engine === 'precise' ? 'Precise' : 'Fast'}
             </Text>
           </TouchableOpacity>
-        ))}
+        ) : null}
       </View>
 
       {/* Progress bar */}
@@ -587,20 +615,31 @@ export default function ReciteView({
         </View>
       ) : null}
 
-      {/* Bottom bar */}
+      {engine === 'precise' && active && whisperSession.lastHeard ? (
+        <View style={styles.heardStrip}>
+          <Text style={styles.heardText} numberOfLines={1}>
+            {whisperSession.lastHeard}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* Bottom bar — stats · (peek) · mic */}
       <View style={styles.bottomBar}>
-        <TouchableOpacity
-          style={styles.statsCol}
-          onPress={() => setMistakesOpen(true)}
-          disabled={mistakeCount === 0}
-        >
+        <View style={styles.statsCol}>
           <View style={styles.statRow}>
             <View
               style={[styles.recDot, active ? styles.recDotOn : styles.recDotOff]}
             />
             <Text style={styles.timerText}>{formatTime(seconds)}</Text>
+            <TouchableOpacity onPress={handleReset} style={styles.resetBtn}>
+              <Ionicons name="refresh" size={16} color={Colors.textSecondary} />
+            </TouchableOpacity>
           </View>
-          <View style={styles.statRow}>
+          <TouchableOpacity
+            style={styles.statRow}
+            onPress={() => setMistakesOpen(true)}
+            disabled={mistakeCount === 0}
+          >
             <Text
               style={[
                 styles.mistakesText,
@@ -612,39 +651,8 @@ export default function ReciteView({
             {mistakeCount > 0 && (
               <Ionicons name="chevron-up" size={12} color={Colors.error} />
             )}
-          </View>
-        </TouchableOpacity>
-
-        <TouchableOpacity onPress={handleReset} style={styles.resetBtn}>
-          <Ionicons name="refresh" size={22} color={Colors.textSecondary} />
-        </TouchableOpacity>
-
-        {ASR_URL ? (
-          <TouchableOpacity
-            onPress={() =>
-              !active && setEngine((e) => (e === 'fast' ? 'precise' : 'fast'))
-            }
-            disabled={active}
-            style={[
-              styles.engineBtn,
-              engine === 'precise' && styles.engineBtnPrecise,
-            ]}
-          >
-            <Ionicons
-              name={engine === 'precise' ? 'diamond' : 'flash'}
-              size={14}
-              color={engine === 'precise' ? '#fff' : Colors.primary}
-            />
-            <Text
-              style={[
-                styles.engineText,
-                engine === 'precise' && styles.engineTextActive,
-              ]}
-            >
-              {engine === 'precise' ? 'Precise' : 'Fast'}
-            </Text>
           </TouchableOpacity>
-        ) : null}
+        </View>
 
         {mode === 'memorize' && (
           <TouchableOpacity onPress={peekWord} style={styles.peekBtn}>
@@ -935,11 +943,17 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.arabicBold,
   },
 
-  modeTabs: {
+  controlsRow: {
     flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     marginHorizontal: 14,
     marginTop: 12,
     marginBottom: 8,
+  },
+  modeTabs: {
+    flex: 1,
+    flexDirection: 'row',
     backgroundColor: '#EBE5D6',
     borderRadius: 12,
     padding: 3,
@@ -1101,8 +1115,9 @@ const styles = StyleSheet.create({
   mistakesTextActive: { color: Colors.error, fontWeight: '700' },
 
   resetBtn: {
-    padding: 9,
-    borderRadius: 12,
+    marginLeft: 8,
+    padding: 5,
+    borderRadius: 10,
     backgroundColor: Colors.background,
   },
   peekBtn: {
@@ -1119,12 +1134,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: 11,
-    paddingVertical: 9,
-    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
     backgroundColor: Colors.accentSoft,
   },
   engineBtnPrecise: { backgroundColor: Colors.primary },
+  heardStrip: {
+    marginHorizontal: 14,
+    marginBottom: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    backgroundColor: '#EBE5D6',
+  },
+  heardText: {
+    fontSize: 12.5,
+    color: Colors.textSecondary,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+  },
   engineText: { color: Colors.primary, fontSize: 12.5, fontWeight: '700' },
   engineTextActive: { color: '#fff' },
 
