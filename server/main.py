@@ -46,10 +46,13 @@ print("[quran-asr] model ready")
 
 @app.get("/health")
 def health():
+    has_ggml = os.path.exists(GGML_PATH)
     return {
         "ok": True,
         "model": os.path.basename(MODEL_DIR),
-        "ggml": os.path.exists(GGML_PATH),
+        "ggml": has_ggml,
+        # The app compares this to the downloaded file to catch truncation.
+        "ggml_size": os.path.getsize(GGML_PATH) if has_ggml else 0,
     }
 
 

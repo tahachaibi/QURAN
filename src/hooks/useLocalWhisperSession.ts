@@ -36,13 +36,36 @@ const MODEL_FILE = 'ggml-quran.bin';
 // a few seconds; the weights are ~150MB in RAM).
 let ctxPromise: Promise<WhisperContext> | null = null;
 
+// ggml whisper models start with int32 0x67676d6c ("ggml") — little-endian
+// on disk that's the ASCII bytes "lmgg", which is "bG1nZw==" in base64.
+const GGML_MAGIC_B64 = 'bG1nZw==';
+
+async function isGgmlFile(path: string): Promise<boolean> {
+  try {
+    const head = await FileSystem.readAsStringAsync(path, {
+      encoding: FileSystem.EncodingType.Base64,
+      position: 0,
+      length: 4,
+    });
+    return head === GGML_MAGIC_B64;
+  } catch {
+    return false;
+  }
+}
+
 async function ensureModel(
   serverUrl: string,
   onProgress: (pct: number) => void
 ): Promise<string> {
   const dest = `${FileSystem.documentDirectory}${MODEL_FILE}`;
   const info = await FileSystem.getInfoAsync(dest);
-  if (info.exists && (info.size ?? 0) > 10_000_000) return dest;
+  if (
+    info.exists &&
+    (info.size ?? 0) > 10_000_000 &&
+    (await isGgmlFile(dest))
+  ) {
+    return dest;
+  }
   if (!serverUrl) {
     throw new Error(
       'Model not downloaded yet — start scripts/dev.sh once and retry'
@@ -73,13 +96,30 @@ async function ensureModel(
     );
   }
   // A tunnel/proxy error page or an error-JSON can still arrive as HTTP 200 —
-  // a real Whisper base model is >100MB; never hand a tiny file to whisper.cpp.
+  // never hand a wrong or truncated file to whisper.cpp.
   const dled = await FileSystem.getInfoAsync(dest);
-  if (!dled.exists || (dled.size ?? 0) < 10_000_000) {
+  const size = dled.exists ? dled.size ?? 0 : 0;
+  if (size < 10_000_000 || !(await isGgmlFile(dest))) {
     await FileSystem.deleteAsync(dest, { idempotent: true }).catch(() => {});
     throw new Error(
-      'Server sent an invalid model file — run: bash server/convert-ggml.sh, then restart scripts/dev.sh'
+      `Server sent something that isn't the model (${Math.round(size / 1024)}KB, not ggml) — restart scripts/dev.sh and retry`
     );
+  }
+  // Catch tunnel truncation: the server tells us the exact expected size.
+  try {
+    const h = await fetch(`${serverUrl}/health`);
+    const health = (await h.json()) as { ggml_size?: number };
+    if (health.ggml_size && health.ggml_size !== size) {
+      await FileSystem.deleteAsync(dest, { idempotent: true }).catch(() => {});
+      throw new Error(
+        `Download truncated (${size} of ${health.ggml_size} bytes) — tap the mic to retry`
+      );
+    }
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith('Download truncated')) {
+      throw e;
+    }
+    // Health check unreachable — the size+magic checks above still passed.
   }
   return dest;
 }
@@ -93,7 +133,12 @@ function getWhisperContext(
       const path = await ensureModel(serverUrl, onProgress);
       try {
         // whisper.cpp expects a plain filesystem path, not a file:// URI.
-        return await initWhisper({ filePath: path.replace(/^file:\/\//, '') });
+        // useGpu off: Android GPU delegates fail to init on many devices,
+        // and the base model is fast enough on CPU.
+        return await initWhisper({
+          filePath: path.replace(/^file:\/\//, ''),
+          useGpu: false,
+        });
       } catch (e) {
         // Corrupt cache — drop it so the next attempt re-downloads.
         await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
